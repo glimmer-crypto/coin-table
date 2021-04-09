@@ -5,15 +5,24 @@ import Wallet from "./Wallet"
 import Key from "./Key"
 
 import * as http from "http"
-import * as WebSocket from "ws"
+import type * as WS from "ws"
 import fetch from "node-fetch"
 import * as serveStatic from "serve-static"
+
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+let WebSocket: typeof WS = require("ws") // Must be a variable to work in the browser
+
+if (typeof self !== "undefined" && typeof window === "undefined") {
+  throw new Error("Coin Table is currently unavailable in web workers due to WebRTC limitations")
+}
 
 const inBrowser = typeof window !== "undefined"
 if (inBrowser) {
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore
   WebSocket = window.WebSocket
+
+  console.log("in the browser")
 }
 
 type NetworkEvents = {
@@ -544,11 +553,11 @@ namespace Network {
   class WebSocketConnection extends Connection {
     readonly serverHost?: string
 
-    readonly webSocket: WebSocket
+    readonly webSocket: WS
     readonly network: Network.Client
     readonly connectionTimestamp = Date.now()
 
-    constructor(webSocket: WebSocket, connectionAddress: string, uniqueId: number, parent: Network.Client, host?: string) {
+    constructor(webSocket: WS, connectionAddress: string, uniqueId: number, parent: Network.Client, host?: string) {
       super(connectionAddress, uniqueId, parent)
       console.log("Created WebSocket connection with", connectionAddress.slice(0, 8))
 
@@ -817,14 +826,16 @@ namespace Network {
       } catch (err) {
         console.error(err)
 
-        ws.onerror = (err) => console.error(err.message ?? err)
+        ws.onerror = err => {
+          if (err.message) { console.error(err.message) }
+        }
         ws.onopen = () => ws.close()
         return null
       }
 
       return new Promise(resolve => {
         ws.onerror = (err) => {
-          console.error(err.message ?? err)
+          if (err.message) { console.error(err.message) }
           resolve(null)
         }
         connection.on("open", () => resolve(connection))
@@ -988,7 +999,7 @@ namespace Network {
     readonly connections: { [walletAddress: string]: Set<WebSocketConnection> } = {}
     readonly publicHost: string
 
-    private readonly wsServer: WebSocket.Server
+    private readonly wsServer: WS.Server
     private readonly server: http.Server
     private readonly staticServe?: serveStatic.RequestHandler<http.ServerResponse>
   

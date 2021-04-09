@@ -2,7 +2,7 @@ import type Node from "./Node";
 import { EventTarget } from "./utils";
 import CoinTable from "./CoinTable";
 import Wallet from "./Wallet";
-import * as WebSocket from "ws";
+import type * as WS from "ws";
 declare type NetworkEvents = {
     "tabledigest": {
         digest: Uint8Array;
@@ -79,10 +79,10 @@ declare namespace Network {
     }
     class WebSocketConnection extends Connection {
         readonly serverHost?: string;
-        readonly webSocket: WebSocket;
+        readonly webSocket: WS;
         readonly network: Network.Client;
         readonly connectionTimestamp: number;
-        constructor(webSocket: WebSocket, connectionAddress: string, uniqueId: number, parent: Network.Client, host?: string);
+        constructor(webSocket: WS, connectionAddress: string, uniqueId: number, parent: Network.Client, host?: string);
         internalSend(message: Uint8Array): void;
     }
     class WebRTCConnection extends Connection {

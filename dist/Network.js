@@ -5,14 +5,19 @@ const CoinTable_1 = require("./CoinTable");
 const Wallet_1 = require("./Wallet");
 const Key_1 = require("./Key");
 const http = require("http");
-const WebSocket = require("ws");
 const node_fetch_1 = require("node-fetch");
 const serveStatic = require("serve-static");
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+let WebSocket = require("ws"); // Must be a variable to work in the browser
+if (typeof self !== "undefined" && typeof window === "undefined") {
+    throw new Error("Coin Table is currently unavailable in web workers due to WebRTC limitations");
+}
 const inBrowser = typeof window !== "undefined";
 if (inBrowser) {
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
     WebSocket = window.WebSocket;
+    console.log("in the browser");
 }
 class Network extends utils_1.EventTarget {
     constructor(wallet) {
@@ -661,14 +666,19 @@ class Network extends utils_1.EventTarget {
             }
             catch (err) {
                 console.error(err);
-                ws.onerror = (err) => { var _a; return console.error((_a = err.message) !== null && _a !== void 0 ? _a : err); };
+                ws.onerror = err => {
+                    if (err.message) {
+                        console.error(err.message);
+                    }
+                };
                 ws.onopen = () => ws.close();
                 return null;
             }
             return new Promise(resolve => {
                 ws.onerror = (err) => {
-                    var _a;
-                    console.error((_a = err.message) !== null && _a !== void 0 ? _a : err);
+                    if (err.message) {
+                        console.error(err.message);
+                    }
                     resolve(null);
                 };
                 connection.on("open", () => resolve(connection));
