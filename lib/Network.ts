@@ -21,8 +21,6 @@ if (inBrowser) {
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore
   WebSocket = window.WebSocket
-
-  console.log("in the browser")
 }
 
 type NetworkEvents = {
