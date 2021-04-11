@@ -17,7 +17,6 @@ if (inBrowser) {
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
     WebSocket = window.WebSocket;
-    console.log("in the browser");
 }
 class Network extends utils_1.EventTarget {
     constructor(wallet) {

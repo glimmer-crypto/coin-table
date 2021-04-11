@@ -53,7 +53,8 @@ function kdfWithProgress(input, iterations, progressObj) {
         let setIndex = 0;
         let i = 0;
         const hashIteration = () => {
-            for (let j = 0; j < iterations / 100; j++) {
+            const chunkIterations = Math.max(25, iterations / 100);
+            for (let j = 0; j < chunkIterations; j++) {
                 digestIndex = digestIndex % (MB - 64) % digestLength;
                 sha.update(expanded.subarray(digestIndex, digestIndex + 64));
                 sha.update(utils_1.Convert.int64ToBuffer(i));
