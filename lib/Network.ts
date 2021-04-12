@@ -49,6 +49,13 @@ abstract class Network extends EventTarget<NetworkEvents> {
   abstract sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<CoinTable.SignedTransaction | false | null>
 
   onRecievingPendingTransaction: (transaction: CoinTable.PendingTransaction, from: string) => Promise<CoinTable.SignedTransaction | false> | CoinTable.SignedTransaction | false
+
+  protected disposed = false
+  dispose(): void {
+    this.disposed = true
+    this.internalDispose()
+  }
+  protected abstract internalDispose(): void
 }
 
 namespace Network {
@@ -56,6 +63,8 @@ namespace Network {
     private connections: { [walletAddress: string]: Node } = {}
 
     connect(node: Node): void {
+      if (this.disposed) { return }
+
       const connectionAddress = node.wallet.public.address
       if (connectionAddress === this.wallet.public.address) { return }
 
@@ -80,7 +89,7 @@ namespace Network {
           if (connId === excluding) { return }
 
           const recieverNetwork = this.connections[connId].network as Local
-          return recieverNetwork.dispatchEvent("tabledigest", { digest: this.node.table.digest, from: { address: this.wallet.public.address } })
+          return recieverNetwork.dispatchEvent("tabledigest", { digest: table.digest, from: { address: this.wallet.public.address } })
         })
       )
     }
@@ -111,6 +120,11 @@ namespace Network {
       await new Promise(r => setTimeout(r, 250))
       return await recieverNetwork.onRecievingPendingTransaction?.(transaction, this.wallet.public.address) ?? null
     }
+
+    internalDispose(): void {
+      this.connections = { }
+      this.connectedAddresses = new Set()
+    }
   }
 
   interface Message {
@@ -136,6 +150,7 @@ namespace Network {
 
     constructor(connectionAddress: string, uniqueId: number, parentNetwork: Client) {
       super()
+      console.log("Connection created", connectionAddress, uniqueId)
 
       this.address = connectionAddress
       this.uniqueId = uniqueId
@@ -170,6 +185,7 @@ namespace Network {
 
     protected internalOpenHandler() {
       if (this.state !== "connecting") { return } // Only run if state is currently in "connecting"
+      console.log("Connection opened", this.address, this.uniqueId)
 
       const connections = this.network["connections"]
 
@@ -236,6 +252,7 @@ namespace Network {
         this.state = "closed"
         return
       } // Only run if connection is open
+      console.log("Connection closed", this.address, this.uniqueId)
 
       this.network.deleteConnection(this.address, this)
 
@@ -440,7 +457,7 @@ namespace Network {
         const uniqueId = Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4))
 
         const connection = this.network.getConnection(connectionAddress, uniqueId)
-        if (!connection || connection.state === "closed" || connection instanceof WebSocketConnection) {
+        if (!connection || connection.state === "closed") {
           console.log("Recieved RTC offer from", connectionAddress.slice(0, 8), "via", this.address.slice(0, 8))
 
           const peerConnection = new RTCPeerConnection({
@@ -546,6 +563,8 @@ namespace Network {
         }
       })
     }
+
+    abstract close(): void
   }
 
   class WebSocketConnection extends Connection {
@@ -596,12 +615,21 @@ namespace Network {
     internalSend(message: Uint8Array): void {
       this.webSocket.send(message)
     }
+
+    close() {
+      if (this.webSocket.readyState === WebSocket.OPEN) {
+        this.webSocket.close()
+      } else {
+        this.webSocket.onopen = ev => ev.target.close()
+      }
+    }
   }
 
   class WebRTCConnection extends Connection {
     readonly network: Network.Client
 
     private localDescriptionPromise: Promise<RTCSessionDescription>
+    private peerConnection: RTCPeerConnection
     private dataChannel: RTCDataChannel
 
     constructor(peerConnection: RTCPeerConnection, connectionAddress: string, uniqueId: number, parentNetwork: Network.Client) {
@@ -626,6 +654,8 @@ namespace Network {
           super.internalClosedHandler()
         }
       }
+
+      this.peerConnection = peerConnection
     }
 
     getLocalDescription() {
@@ -703,6 +733,17 @@ namespace Network {
           message.slice(messageIndex, messageIndex += 60_000)
         ))
         sliceIndex += 1
+      }
+    }
+
+    close() {
+      if (this.dataChannel.readyState === "open") {
+        this.dataChannel.close()
+      } else {
+        this.dataChannel.onopen = () => {
+          this.dataChannel.close()
+          this.peerConnection.close()
+        }
       }
     }
   }
@@ -983,6 +1024,12 @@ namespace Network {
       }
 
       return false
+    }
+
+    internalDispose(): void {
+      Object.keys(this.connections).forEach(addr => {
+        this.connections[addr].forEach(connection => connection.close())
+      })
     }
   }
 

@@ -22,7 +22,12 @@ class Network extends utils_1.EventTarget {
     constructor(wallet) {
         super();
         this.connectedAddresses = new Set();
+        this.disposed = false;
         this.wallet = wallet;
+    }
+    dispose() {
+        this.disposed = true;
+        this.internalDispose();
     }
 }
 (function (Network) {
@@ -32,6 +37,9 @@ class Network extends utils_1.EventTarget {
             this.connections = {};
         }
         connect(node) {
+            if (this.disposed) {
+                return;
+            }
             const connectionAddress = node.wallet.public.address;
             if (connectionAddress === this.wallet.public.address) {
                 return;
@@ -55,7 +63,7 @@ class Network extends utils_1.EventTarget {
                     return;
                 }
                 const recieverNetwork = this.connections[connId].network;
-                return recieverNetwork.dispatchEvent("tabledigest", { digest: this.node.table.digest, from: { address: this.wallet.public.address } });
+                return recieverNetwork.dispatchEvent("tabledigest", { digest: table.digest, from: { address: this.wallet.public.address } });
             }));
         }
         async shareTransaction(transaction, excluding) {
@@ -84,6 +92,10 @@ class Network extends utils_1.EventTarget {
             await new Promise(r => setTimeout(r, 250));
             return (_b = await ((_a = recieverNetwork.onRecievingPendingTransaction) === null || _a === void 0 ? void 0 : _a.call(recieverNetwork, transaction, this.wallet.public.address))) !== null && _b !== void 0 ? _b : null;
         }
+        internalDispose() {
+            this.connections = {};
+            this.connectedAddresses = new Set();
+        }
     }
     Network.Local = Local;
     class Connection extends utils_1.EventTarget {
@@ -92,6 +104,7 @@ class Network extends utils_1.EventTarget {
             this.state = "connecting";
             this.neighbors = new Map();
             this.pendingResponses = {};
+            console.log("Connection created", connectionAddress, uniqueId);
             this.address = connectionAddress;
             this.uniqueId = uniqueId;
             this.network = parentNetwork;
@@ -121,6 +134,7 @@ class Network extends utils_1.EventTarget {
             if (this.state !== "connecting") {
                 return;
             } // Only run if state is currently in "connecting"
+            console.log("Connection opened", this.address, this.uniqueId);
             const connections = this.network["connections"];
             const connectionBuffers = [];
             this.network.connectedAddresses.forEach(addr => {
@@ -164,6 +178,7 @@ class Network extends utils_1.EventTarget {
                 this.state = "closed";
                 return;
             } // Only run if connection is open
+            console.log("Connection closed", this.address, this.uniqueId);
             this.network.deleteConnection(this.address, this);
             this.state = "closed";
             this.dispatchEvent("close");
@@ -337,7 +352,7 @@ class Network extends utils_1.EventTarget {
                 const connectionAddress = utils_1.Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key_1.default.Public.LENGTH));
                 const uniqueId = utils_1.Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4));
                 const connection = this.network.getConnection(connectionAddress, uniqueId);
-                if (!connection || connection.state === "closed" || connection instanceof WebSocketConnection) {
+                if (!connection || connection.state === "closed") {
                     console.log("Recieved RTC offer from", connectionAddress.slice(0, 8), "via", this.address.slice(0, 8));
                     const peerConnection = new RTCPeerConnection({
                         iceServers: [{ urls: "stun:stun2.l.google.com:19302" }]
@@ -460,6 +475,14 @@ class Network extends utils_1.EventTarget {
         internalSend(message) {
             this.webSocket.send(message);
         }
+        close() {
+            if (this.webSocket.readyState === WebSocket.OPEN) {
+                this.webSocket.close();
+            }
+            else {
+                this.webSocket.onopen = ev => ev.target.close();
+            }
+        }
     }
     class WebRTCConnection extends Connection {
         constructor(peerConnection, connectionAddress, uniqueId, parentNetwork) {
@@ -481,6 +504,7 @@ class Network extends utils_1.EventTarget {
                     super.internalClosedHandler();
                 }
             };
+            this.peerConnection = peerConnection;
         }
         getLocalDescription() {
             return this.localDescriptionPromise;
@@ -547,6 +571,17 @@ class Network extends utils_1.EventTarget {
                 ]);
                 this.dataChannel.send(utils_1.Buffer.concat(new Uint8Array(head.buffer), message.slice(messageIndex, messageIndex += 60000)));
                 sliceIndex += 1;
+            }
+        }
+        close() {
+            if (this.dataChannel.readyState === "open") {
+                this.dataChannel.close();
+            }
+            else {
+                this.dataChannel.onopen = () => {
+                    this.dataChannel.close();
+                    this.peerConnection.close();
+                };
             }
         }
     }
@@ -813,6 +848,11 @@ class Network extends utils_1.EventTarget {
                 return signedTransaction;
             }
             return false;
+        }
+        internalDispose() {
+            Object.keys(this.connections).forEach(addr => {
+                this.connections[addr].forEach(connection => connection.close());
+            });
         }
     }
     Network.Client = Client;

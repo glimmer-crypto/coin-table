@@ -34,6 +34,9 @@ declare abstract class Network extends EventTarget<NetworkEvents> {
     abstract shareTransaction(transaction: CoinTable.SignedTransaction, exclude?: string): Promise<void>;
     abstract sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<CoinTable.SignedTransaction | false | null>;
     onRecievingPendingTransaction: (transaction: CoinTable.PendingTransaction, from: string) => Promise<CoinTable.SignedTransaction | false> | CoinTable.SignedTransaction | false;
+    protected disposed: boolean;
+    dispose(): void;
+    protected abstract internalDispose(): void;
 }
 declare namespace Network {
     export class Local extends Network {
@@ -44,6 +47,7 @@ declare namespace Network {
         shareTable(table: CoinTable, excluding: string): Promise<void>;
         shareTransaction(transaction: CoinTable.SignedTransaction, excluding: string): Promise<void>;
         sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<CoinTable.SignedTransaction | false | null>;
+        internalDispose(): void;
     }
     interface Message {
         verified: boolean;
@@ -76,6 +80,7 @@ declare namespace Network {
         private createMessage;
         private destructureMessage;
         signalForWebRTCConnection(connectionAddress: string, uniqueId: number): Promise<WebRTCConnection | null>;
+        abstract close(): void;
     }
     class WebSocketConnection extends Connection {
         readonly serverHost?: string;
@@ -84,10 +89,12 @@ declare namespace Network {
         readonly connectionTimestamp: number;
         constructor(webSocket: WS, connectionAddress: string, uniqueId: number, parent: Network.Client, host?: string);
         internalSend(message: Uint8Array): void;
+        close(): void;
     }
     class WebRTCConnection extends Connection {
         readonly network: Network.Client;
         private localDescriptionPromise;
+        private peerConnection;
         private dataChannel;
         constructor(peerConnection: RTCPeerConnection, connectionAddress: string, uniqueId: number, parentNetwork: Network.Client);
         getLocalDescription(): Promise<RTCSessionDescription>;
@@ -95,6 +102,7 @@ declare namespace Network {
         private incomingMessages;
         private recieveMessageSlice;
         protected internalSend(message: Uint8Array): void;
+        close(): void;
     }
     export class Client extends Network {
         totalConnections: number;
@@ -118,6 +126,7 @@ declare namespace Network {
         shareTable(table: CoinTable, excluding?: string | Connection): Promise<void>;
         shareTransaction(transaction: CoinTable.SignedTransaction, excluding?: string): Promise<void>;
         sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<false | CoinTable.SignedTransaction | null>;
+        internalDispose(): void;
     }
     export class Server extends Client {
         readonly connections: {
