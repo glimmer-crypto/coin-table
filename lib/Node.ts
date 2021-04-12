@@ -86,6 +86,7 @@ export default class Node extends EventTarget<NodeEvents> {
             this.table.applyTransaction(signed)
             this.network.shareTransaction(signed)
   
+            this.dispatchEvent("transactioncompleted", deepClone(signed))
             return signed
           } catch (err) {
             console.error(err)
@@ -146,7 +147,7 @@ export default class Node extends EventTarget<NodeEvents> {
       }
     }
 
-    const myVotes = disputedAdresses.size * Math.sqrt(oldBalances[this.wallet.public.address].amount)
+    const myVotes = disputedAdresses.size * Math.sqrt(oldBalances[this.wallet.public.address]?.amount ?? 0)
     const votes = {
       old: myVotes,
       new: 0,
@@ -170,10 +171,12 @@ export default class Node extends EventTarget<NodeEvents> {
         i += 1
 
         if (connectedAddress === this.wallet.public.address || !allAdresses.has(connectedAddress)) { continue }
+
+        const balance = oldBalances[connectedAddress]
+        if (!balance || balance.amount == 0) { continue }
+        const votingPower = Math.sqrt(balance.amount)
+
         pendingVoters += 1
-
-        const votingPower = Math.sqrt(oldBalances[connectedAddress]?.amount) ?? 0
-
         pendingVotes.push(((async () => {
           const requests: Promise<void>[] = new Array(disputedAdresses.size)
   
@@ -255,6 +258,8 @@ export default class Node extends EventTarget<NodeEvents> {
         try {
           this.table.applyTransaction(signed)
           this.network.shareTransaction(signed)
+
+          this.dispatchEvent("transactioncompleted", deepClone(signed))
           return true
         } catch (err) {
           console.error(err)

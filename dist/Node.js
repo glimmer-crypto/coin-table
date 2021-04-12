@@ -75,6 +75,7 @@ class Node extends utils_1.EventTarget {
                         const signed = this.wallet.signTransaction(transaction);
                         this.table.applyTransaction(signed);
                         this.network.shareTransaction(signed);
+                        this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
                         return signed;
                     }
                     catch (err) {
@@ -129,7 +130,7 @@ class Node extends utils_1.EventTarget {
                 return returnTable;
             }
         }
-        const myVotes = disputedAdresses.size * Math.sqrt(oldBalances[this.wallet.public.address].amount);
+        const myVotes = disputedAdresses.size * Math.sqrt((_b = (_a = oldBalances[this.wallet.public.address]) === null || _a === void 0 ? void 0 : _a.amount) !== null && _b !== void 0 ? _b : 0);
         const votes = {
             old: myVotes,
             new: 0,
@@ -152,8 +153,12 @@ class Node extends utils_1.EventTarget {
                 if (connectedAddress === this.wallet.public.address || !allAdresses.has(connectedAddress)) {
                     continue;
                 }
+                const balance = oldBalances[connectedAddress];
+                if (!balance || balance.amount == 0) {
+                    continue;
+                }
+                const votingPower = Math.sqrt(balance.amount);
                 pendingVoters += 1;
-                const votingPower = (_b = Math.sqrt((_a = oldBalances[connectedAddress]) === null || _a === void 0 ? void 0 : _a.amount)) !== null && _b !== void 0 ? _b : 0;
                 pendingVotes.push(((async () => {
                     const requests = new Array(disputedAdresses.size);
                     let addrIndex = 0;
@@ -230,6 +235,7 @@ class Node extends utils_1.EventTarget {
                 try {
                     this.table.applyTransaction(signed);
                     this.network.shareTransaction(signed);
+                    this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
                     return true;
                 }
                 catch (err) {
