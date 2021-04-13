@@ -38,7 +38,12 @@ function kdf(input: string, iterations: number) {
     sha.update(Convert.int64ToBuffer(i))
 
     const hashResult = sha.digest()
-    digestIndex += checksum(hashResult, digestLength)
+    const int32Arr = new Uint32Array(new Uint8Array(hashResult).buffer)
+    let indexChange = 0
+    for (let i = 0; i < 16; i++) {
+      indexChange ^= int32Arr[i]
+    }
+    digestIndex += indexChange >>> 0
 
     setIndex += 64
     if (setIndex >= MB) {
@@ -49,17 +54,11 @@ function kdf(input: string, iterations: number) {
     digestLength += 64
   }
 
-  const result = new Uint8Array(64)
-  for (let i = 0; i < 64; i++) {
-    const incrementAmount = expanded[(digestIndex + 1) % digestLength] << 8 | expanded[(digestIndex + 2) % digestLength]
-    digestIndex = (digestIndex + incrementAmount) % digestLength
-    result[i] = expanded[digestIndex]
-  }
-
-  return sha.update(result).digest()
+  digestIndex = digestIndex % (digestLength - 64)
+  return expanded.slice(digestIndex, digestIndex + 64)
 }
 
-function kdfWithProgress(input: string, iterations: number, progressObj: { progress?: number, stop?: boolean }): Promise<number[] | null> {
+function kdfWithProgress(input: string, iterations: number, progressObj: { progress?: number, stop?: boolean }): Promise<Uint8Array | null> {
   return new Promise(resolve => {
     const sha = sha512()
     sha.update(input)
@@ -79,7 +78,12 @@ function kdfWithProgress(input: string, iterations: number, progressObj: { progr
         sha.update(Convert.int64ToBuffer(i))
 
         const hashResult = sha.digest()
-        digestIndex += checksum(hashResult, digestLength)
+        const int32Arr = new Uint32Array(new Uint8Array(hashResult).buffer)
+        let indexChange = 0
+        for (let i = 0; i < 16; i++) {
+          indexChange ^= int32Arr[i]
+        }
+        digestIndex += indexChange >>> 0
 
         setIndex += 64
         if (setIndex >= MB) {
@@ -101,14 +105,8 @@ function kdfWithProgress(input: string, iterations: number, progressObj: { progr
       if (i < iterations) {
         setTimeout(hashIteration, 0)
       } else {
-        const result = new Uint8Array(64)
-        for (let i = 0; i < 64; i++) {
-          const incrementAmount = expanded[(digestIndex + 1) % digestLength] << 8 | expanded[(digestIndex + 2) % digestLength]
-          digestIndex = (digestIndex + incrementAmount) % digestLength
-          result[i] = expanded[digestIndex]
-        }
-
-        resolve(sha.update(result).digest())
+        digestIndex = digestIndex % (digestLength - 64)
+        resolve(expanded.slice(digestIndex, digestIndex + 64))
       }
     }
     setTimeout(hashIteration, 0)

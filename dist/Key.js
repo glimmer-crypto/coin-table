@@ -26,7 +26,12 @@ function kdf(input, iterations) {
         sha.update(expanded.subarray(digestIndex, digestIndex + 64));
         sha.update(utils_1.Convert.int64ToBuffer(i));
         const hashResult = sha.digest();
-        digestIndex += checksum(hashResult, digestLength);
+        const int32Arr = new Uint32Array(new Uint8Array(hashResult).buffer);
+        let indexChange = 0;
+        for (let i = 0; i < 16; i++) {
+            indexChange ^= int32Arr[i];
+        }
+        digestIndex += indexChange >>> 0;
         setIndex += 64;
         if (setIndex >= MB) {
             setIndex = 0;
@@ -34,13 +39,8 @@ function kdf(input, iterations) {
         expanded.set(hashResult, setIndex);
         digestLength += 64;
     }
-    const result = new Uint8Array(64);
-    for (let i = 0; i < 64; i++) {
-        const incrementAmount = expanded[(digestIndex + 1) % digestLength] << 8 | expanded[(digestIndex + 2) % digestLength];
-        digestIndex = (digestIndex + incrementAmount) % digestLength;
-        result[i] = expanded[digestIndex];
-    }
-    return sha.update(result).digest();
+    digestIndex = digestIndex % (digestLength - 64);
+    return expanded.slice(digestIndex, digestIndex + 64);
 }
 function kdfWithProgress(input, iterations, progressObj) {
     return new Promise(resolve => {
@@ -59,7 +59,12 @@ function kdfWithProgress(input, iterations, progressObj) {
                 sha.update(expanded.subarray(digestIndex, digestIndex + 64));
                 sha.update(utils_1.Convert.int64ToBuffer(i));
                 const hashResult = sha.digest();
-                digestIndex += checksum(hashResult, digestLength);
+                const int32Arr = new Uint32Array(new Uint8Array(hashResult).buffer);
+                let indexChange = 0;
+                for (let i = 0; i < 16; i++) {
+                    indexChange ^= int32Arr[i];
+                }
+                digestIndex += indexChange >>> 0;
                 setIndex += 64;
                 if (setIndex >= MB) {
                     setIndex = 0;
@@ -79,13 +84,8 @@ function kdfWithProgress(input, iterations, progressObj) {
                 setTimeout(hashIteration, 0);
             }
             else {
-                const result = new Uint8Array(64);
-                for (let i = 0; i < 64; i++) {
-                    const incrementAmount = expanded[(digestIndex + 1) % digestLength] << 8 | expanded[(digestIndex + 2) % digestLength];
-                    digestIndex = (digestIndex + incrementAmount) % digestLength;
-                    result[i] = expanded[digestIndex];
-                }
-                resolve(sha.update(result).digest());
+                digestIndex = digestIndex % (digestLength - 64);
+                resolve(expanded.slice(digestIndex, digestIndex + 64));
             }
         };
         setTimeout(hashIteration, 0);
