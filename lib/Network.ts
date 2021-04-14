@@ -751,7 +751,7 @@ namespace Network {
   export class Client extends Network {
     totalConnections = 0
     protected connections: { [walletAddress: string]: Set<Connection> } = {}
-    protected cachedServers: { [walletAddress: string]: string } = {}
+    cachedServers: { [walletAddress: string]: string } = {}
     uniqueId = Math.floor(Math.random() * 0xFFFFFFFF)
 
     constructor(wallet: Wallet) {

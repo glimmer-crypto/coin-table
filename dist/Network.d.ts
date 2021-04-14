@@ -109,7 +109,7 @@ declare namespace Network {
         protected connections: {
             [walletAddress: string]: Set<Connection>;
         };
-        protected cachedServers: {
+        cachedServers: {
             [walletAddress: string]: string;
         };
         uniqueId: number;
