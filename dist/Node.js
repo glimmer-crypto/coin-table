@@ -37,6 +37,19 @@ class Node extends utils_1.EventTarget {
         });
         this.network.on("transaction", ({ transaction }) => {
             this.addToQueue(() => {
+                const balances = {
+                    sender: this.table.balances[transaction.sender],
+                    reciver: this.table.balances[transaction.reciever]
+                };
+                if (balances.sender && transaction.timestamp < balances.sender.timestamp ||
+                    balances.reciver && transaction.timestamp < balances.reciver.timestamp) {
+                    return;
+                }
+                if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature !== balances.sender.signature) ||
+                    (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature !== balances.sender.signature)) { // Something wierd is happening, attempt to sync with the network
+                    this.network.shareTable(this.table);
+                    return;
+                }
                 try {
                     this.table.applyTransaction(transaction);
                     this.network.shareTransaction(transaction);
@@ -44,10 +57,7 @@ class Node extends utils_1.EventTarget {
                     this.dispatchEvent("transactioncompleted", utils_1.deepClone(transaction));
                 }
                 catch (err) {
-                    if (err.message.includes("Transaction timestamp is invalid")) {
-                        err.message += " (this could be because it has already been recorded)";
-                    }
-                    else {
+                    if (!err.message.includes("Transaction timestamp is invalid")) {
                         if (!this.failedTransactions[transaction.sender]) {
                             this.failedTransactions[transaction.sender] = [transaction];
                         }

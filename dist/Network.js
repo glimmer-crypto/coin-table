@@ -167,8 +167,20 @@ class Network extends utils_1.EventTarget {
                     }
                 });
             });
+            let connectionCount = connectionBuffers.length;
+            if (connectionCount > 10) { // Balance the responsibility of syncing the table with new peers
+                if (!serverData && connectionCount > 100) { // Clients will limit their connections
+                    connectionCount = 100;
+                }
+                const balancingProbability = 10 / connectionCount;
+                if (Math.random() < balancingProbability) {
+                    this.send("new_table", this.network.node.table.digest);
+                }
+            }
+            else {
+                this.send("new_table", this.network.node.table.digest);
+            }
             this.network.connectedAddresses.add(this.address);
-            this.send("new_table", this.network.node.table.digest);
             this.state = "open";
             this.dispatchEvent("open");
             this.network.dispatchEvent("connection", { address: this.address, host });
