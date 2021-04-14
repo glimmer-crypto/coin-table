@@ -35,67 +35,80 @@ class Node extends utils_1.EventTarget {
                 }
             });
         });
-        this.network.on("transaction", ({ transaction }) => {
-            this.addToQueue(() => {
-                const balances = {
-                    sender: this.table.balances[transaction.sender],
-                    reciver: this.table.balances[transaction.reciever]
-                };
-                if (balances.sender && transaction.timestamp < balances.sender.timestamp ||
-                    balances.reciver && transaction.timestamp < balances.reciver.timestamp) {
-                    return;
-                }
-                if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature !== balances.sender.signature) ||
-                    (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature !== balances.sender.signature)) { // Something wierd is happening, attempt to sync with the network
-                    this.network.shareTable(this.table);
-                    return;
-                }
+    }
+    // Network delegate methods
+    async handlePendingTransaction(transaction, from) {
+        var _a;
+        const myAddress = this.wallet.public.address;
+        const currentBalance = (_a = this.table.balances[myAddress]) !== null && _a !== void 0 ? _a : { timestamp: 0 };
+        if (transaction.reciever === myAddress && transaction.sender === from && transaction.timestamp > currentBalance.timestamp) {
+            return this.addToQueue(async () => {
                 try {
-                    this.table.applyTransaction(transaction);
-                    this.network.shareTransaction(transaction);
-                    this.retryFailedTransactions(transaction);
-                    this.dispatchEvent("transactioncompleted", utils_1.deepClone(transaction));
-                }
-                catch (err) {
-                    if (!err.message.includes("Transaction timestamp is invalid")) {
-                        if (!this.failedTransactions[transaction.sender]) {
-                            this.failedTransactions[transaction.sender] = [transaction];
-                        }
-                        else {
-                            this.failedTransactions[transaction.sender].push(transaction);
-                        }
-                        if (!this.failedTransactions[transaction.reciever]) {
-                            this.failedTransactions[transaction.reciever] = [transaction];
-                        }
-                        else {
-                            this.failedTransactions[transaction.reciever].push(transaction);
-                        }
-                    }
-                    console.error(err);
-                }
-            });
-        });
-        this.network.onRecievingPendingTransaction = (transaction, from) => {
-            var _a;
-            const myAddress = this.wallet.public.address;
-            const currentBalance = (_a = this.table.balances[myAddress]) !== null && _a !== void 0 ? _a : { timestamp: 0 };
-            if (transaction.reciever === myAddress && transaction.sender === from && transaction.timestamp > currentBalance.timestamp) {
-                return this.addToQueue(() => {
-                    try {
-                        const signed = this.wallet.signTransaction(transaction);
+                    const signed = this.wallet.signTransaction(transaction);
+                    const confirmed = await this.network.shareTransaction(signed, true, from);
+                    if (confirmed) {
                         this.table.applyTransaction(signed);
-                        this.network.shareTransaction(signed);
                         this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
                         return signed;
                     }
-                    catch (err) {
-                        console.error(err);
-                        return false;
+                }
+                catch (err) {
+                    console.error(err);
+                    return false;
+                }
+                return false;
+            });
+        }
+        return false;
+    }
+    async handleTransaction(transaction) {
+        return this.addToQueue(() => {
+            const balances = {
+                sender: this.table.balances[transaction.sender],
+                reciver: this.table.balances[transaction.reciever]
+            };
+            if (balances.sender && transaction.timestamp < balances.sender.timestamp ||
+                balances.reciver && transaction.timestamp < balances.reciver.timestamp) {
+                return false;
+            }
+            if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature !== balances.sender.signature) ||
+                (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature !== balances.sender.signature)) { // Something wierd is happening, attempt to sync with the network
+                console.log("Attempting sync");
+                this.network.shareTable(this.table);
+                return false;
+            }
+            if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
+                (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)) {
+                console.log("Transaction applied previously");
+                return true;
+            }
+            try {
+                this.table.applyTransaction(transaction);
+                this.network.shareTransaction(transaction);
+                this.retryFailedTransactions(transaction);
+                this.dispatchEvent("transactioncompleted", utils_1.deepClone(transaction));
+                console.log("Transaction completed successfully");
+                return true;
+            }
+            catch (err) {
+                if (!err.message.includes("Transaction timestamp is invalid")) {
+                    if (!this.failedTransactions[transaction.sender]) {
+                        this.failedTransactions[transaction.sender] = [transaction];
                     }
-                });
+                    else {
+                        this.failedTransactions[transaction.sender].push(transaction);
+                    }
+                    if (!this.failedTransactions[transaction.reciever]) {
+                        this.failedTransactions[transaction.reciever] = [transaction];
+                    }
+                    else {
+                        this.failedTransactions[transaction.reciever].push(transaction);
+                    }
+                }
+                console.error(err);
             }
             return false;
-        };
+        });
     }
     /**
      * @returns A `CoinTable` if there is a new table and `null` if not
@@ -243,14 +256,23 @@ class Node extends utils_1.EventTarget {
             const signed = await this.network.sendPendingTransaction(transaction);
             if (signed) {
                 try {
-                    this.table.applyTransaction(signed);
-                    this.network.shareTransaction(signed);
-                    this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
-                    return true;
+                    const valid = this.wallet.verifyTansaction(signed);
+                    if (!valid) {
+                        return false;
+                    }
+                    const confirmed = await this.network.shareTransaction(signed, true);
+                    if (confirmed) {
+                        this.table.applyTransaction(signed);
+                        this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
+                        return true;
+                    }
                 }
                 catch (err) {
                     console.error(err);
                 }
+            }
+            else {
+                return signed;
             }
             return false;
         });

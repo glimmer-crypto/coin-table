@@ -6,7 +6,7 @@ export declare namespace XorCipher {
     function encrypt(plaintext: BufferLike, key: BufferLike): Uint8Array;
     function decrypt(ciphertext: BufferLike, key: BufferLike): Uint8Array;
 }
-export declare function deepClone<T extends Record<string, any>>(object: T, newObject?: Record<string, any>): T;
+export declare function deepClone<T extends Record<string, any> | undefined | null>(object: T, newObject?: Record<string, any>): T;
 export declare function shuffle<T>(array: Array<T>): Array<T>;
 export declare class EventTarget<EventTypes extends object> {
     private readonly listeners;

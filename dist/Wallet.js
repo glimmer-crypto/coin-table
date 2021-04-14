@@ -101,6 +101,53 @@ class Wallet {
         transaction.recieverSignature = this.signBalance(newBalance).signature;
         return transaction;
     }
+    verifyTansaction(transaction) {
+        if (!this.node.table) {
+            throw new Error("Missing current table");
+        }
+        if (transaction.amount % 1 !== 0) {
+            return false;
+        }
+        const balances = this.node.table.balances;
+        transaction.sender = utils_1.Convert.Base58.normalize(transaction.sender);
+        transaction.reciever = utils_1.Convert.Base58.normalize(transaction.reciever);
+        const senderBalance = utils_1.deepClone(balances[transaction.sender]);
+        if (!senderBalance) {
+            return false;
+        }
+        if (senderBalance.timestamp >= transaction.timestamp) {
+            return false;
+        }
+        if (senderBalance.amount < transaction.amount) {
+            return false;
+        }
+        senderBalance.amount -= transaction.amount;
+        senderBalance.timestamp = transaction.timestamp;
+        senderBalance.signature = transaction.senderSignature;
+        if (!Wallet.verifyBalance(senderBalance, transaction.sender)) {
+            return false;
+        }
+        let recieverBalance = utils_1.deepClone(balances[transaction.reciever]);
+        if (recieverBalance) {
+            if (recieverBalance.timestamp >= transaction.timestamp) {
+                return false;
+            }
+            recieverBalance.amount += transaction.amount;
+            recieverBalance.timestamp = transaction.timestamp;
+            recieverBalance.signature = transaction.recieverSignature;
+        }
+        else {
+            recieverBalance = {
+                amount: transaction.amount,
+                timestamp: transaction.timestamp,
+                signature: transaction.recieverSignature
+            };
+        }
+        if (!Wallet.verifyBalance(recieverBalance, transaction.reciever)) {
+            return false;
+        }
+        return true;
+    }
     signMessage(buf) {
         const signature = this.private.sign(buf, true);
         const concatBuffer = utils_1.Buffer.concat(signature, buf);

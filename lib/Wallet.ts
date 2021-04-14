@@ -124,6 +124,43 @@ class Wallet {
     return transaction as CoinTable.SignedTransaction
   }
 
+  verifyTansaction(transaction: CoinTable.SignedTransaction): boolean {
+    if (!this.node.table) { throw new Error("Missing current table") }
+    if (transaction.amount % 1 !== 0) { return false }
+
+    const balances = this.node.table.balances as CoinTable.Balances
+    transaction.sender = Convert.Base58.normalize(transaction.sender)
+    transaction.reciever = Convert.Base58.normalize(transaction.reciever)
+
+    const senderBalance = deepClone(balances[transaction.sender])
+    if (!senderBalance) { return false }
+    if (senderBalance.timestamp >= transaction.timestamp) { return false }
+    if (senderBalance.amount < transaction.amount) { return false }
+    senderBalance.amount -= transaction.amount
+    senderBalance.timestamp = transaction.timestamp
+    senderBalance.signature = transaction.senderSignature
+
+    if (!Wallet.verifyBalance(senderBalance, transaction.sender)) { return false }
+
+    let recieverBalance = deepClone(balances[transaction.reciever])
+    if (recieverBalance) {
+      if (recieverBalance.timestamp >= transaction.timestamp) { return false }
+      recieverBalance.amount += transaction.amount
+      recieverBalance.timestamp = transaction.timestamp
+      recieverBalance.signature = transaction.recieverSignature
+    } else {
+      recieverBalance = {
+        amount: transaction.amount,
+        timestamp: transaction.timestamp,
+        signature: transaction.recieverSignature
+      }
+    }
+
+    if (!Wallet.verifyBalance(recieverBalance, transaction.reciever)) { return false }
+
+    return true
+  }
+
   signMessage(buf: Uint8Array): Uint8Array {
     const signature = this.private.sign(buf, true)
 

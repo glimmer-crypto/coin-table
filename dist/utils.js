@@ -55,9 +55,15 @@ var XorCipher;
 })(XorCipher = exports.XorCipher || (exports.XorCipher = {}));
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function deepClone(object, newObject = {}) {
+    if (object === null) {
+        return null;
+    }
+    if (object === undefined) {
+        return undefined;
+    }
     for (const key in object) {
         const value = object[key];
-        if (typeof value === "object") {
+        if (typeof value === "object" && value !== null) {
             const newValue = {};
             newObject[key] = newValue;
             deepClone(value, newValue);

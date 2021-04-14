@@ -25,7 +25,6 @@ if (inBrowser) {
 
 type NetworkEvents = {
   "tabledigest": { digest: Uint8Array, from: { address: string, id?: number } },
-  "transaction": { transaction: CoinTable.SignedTransaction, from: string },
   "connection": { address: string, host?: string },
   "disconnection": { address: string }
 }
@@ -44,11 +43,14 @@ abstract class Network extends EventTarget<NetworkEvents> {
   abstract requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | null>
   abstract requestTable(connectionAddress: string, id?: number): Promise<CoinTable | null>
   abstract shareTable(table: CoinTable, exclude?: string): Promise<void>
-  abstract shareTransaction(transaction: CoinTable.SignedTransaction, exclude?: string): Promise<void>
+
+  abstract shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: false, exclude?: string): Promise<void>
+  abstract shareTransaction(transaction: CoinTable.SignedTransaction, confirm: true, exclude?: string): Promise<boolean>
+  abstract shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: boolean, exclude?: string): Promise<boolean | void>
 
   abstract sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<CoinTable.SignedTransaction | false | null>
 
-  onRecievingPendingTransaction: (transaction: CoinTable.PendingTransaction, from: string) => Promise<CoinTable.SignedTransaction | false> | CoinTable.SignedTransaction | false
+  // onRecievingPendingTransaction: (transaction: CoinTable.PendingTransaction, from: string) => Promise<CoinTable.SignedTransaction | false> | CoinTable.SignedTransaction | false
 
   protected disposed = false
   dispose(): void {
@@ -94,14 +96,20 @@ namespace Network {
       )
     }
 
-    async shareTransaction(transaction: CoinTable.SignedTransaction, excluding: string): Promise<void> {
+    async shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: false, exclude?: string): Promise<void>
+    async shareTransaction(transaction: CoinTable.SignedTransaction, confirm: true, exclude?: string): Promise<boolean>
+    async shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: boolean, excluding?: string): Promise<boolean | void> {
       await new Promise(r => setTimeout(r, 250))
       await Promise.all(
         Array.from(this.connectedAddresses).map(connId => {
           if (connId === excluding) { return }
 
-          const recieverNetwork = this.connections[connId].network as Local
-          return recieverNetwork.dispatchEvent("transaction", { transaction, from: this.wallet.public.address })
+          const recieverNode = this.connections[connId]
+          if (confirm) {
+            return recieverNode.handleTransaction(transaction)
+          } else {
+            recieverNode.handleTransaction(transaction)
+          }
         })
       )
     }
@@ -116,9 +124,9 @@ namespace Network {
 
       if (!sendTo || !this.connections[sendTo]) { return null }
 
-      const recieverNetwork = this.connections[sendTo].network as Local
+      const recieverNode = this.connections[sendTo]// .network as Local
       await new Promise(r => setTimeout(r, 250))
-      return await recieverNetwork.onRecievingPendingTransaction?.(transaction, this.wallet.public.address) ?? null
+      return recieverNode.handlePendingTransaction(transaction, this.wallet.public.address) // recieverNetwork.onRecievingPendingTransaction?.(transaction, this.wallet.public.address) ?? null
     }
 
     internalDispose(): void {
@@ -370,7 +378,14 @@ namespace Network {
           sender, senderSignature, senderTransactionSignature, reciever, recieverSignature, amount, timestamp
         }
 
-        this.network.dispatchEvent("transaction", { transaction, from: this.address })
+        if (startIndex < data.body.length && data.body[data.body.length - 1]) { // Requested a response
+          const response = await this.network.node.handleTransaction(transaction)
+          const responseBuffer = new Uint8Array(response ? [1] : [])
+          const responseHeader = "transaction_result_" + senderSignature.slice(0, 16)
+          this.send(responseHeader, responseBuffer)
+        } else {
+          this.network.node.handleTransaction(transaction)
+        }
       } else if (data.header === "pending_transaction") {
         data.body = XorCipher.decrypt(data.body, this.sharedEncryptionKey)
 
@@ -387,7 +402,7 @@ namespace Network {
           sender, senderSignature, senderTransactionSignature, reciever, amount, timestamp
         }
 
-        const response = await this.network.onRecievingPendingTransaction?.(pendingTransaction, this.address)
+        const response = await this.network.node.handlePendingTransaction(pendingTransaction, this.address) //onRecievingPendingTransaction?.(pendingTransaction, this.address)
 
         if (response) {
           const recieverSignature = Convert.Base58.decodeBuffer(response.recieverSignature)
@@ -992,7 +1007,9 @@ namespace Network {
       this.shareWithAll("new_table", table.digest, excluding)
     }
 
-    async shareTransaction(transaction: CoinTable.SignedTransaction, excluding?: string): Promise<void> {
+    async shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: false, exclude?: string | Connection): Promise<void>
+    async shareTransaction(transaction: CoinTable.SignedTransaction, confirm: true, exclude?: string | Connection): Promise<boolean>
+    async shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: boolean, exclude?: string | Connection): Promise<boolean | void> {
       const transactionBuffer = Buffer.concat(
         Convert.Base58.decodeBuffer(transaction.sender, Key.Public.LENGTH),
         Convert.Base58.decodeBuffer(transaction.senderSignature, Key.SIG_LENGTH),
@@ -1003,7 +1020,56 @@ namespace Network {
         Convert.int64ToBuffer(transaction.timestamp)
       )
 
-      this.shareWithAll("new_transaction", transactionBuffer, excluding)
+      if (confirm) {
+        const confirmTransactionBuffer = Buffer.concat(
+          transactionBuffer, [1]
+        )
+
+        const responseHeader = "transaction_result_" + transaction.senderSignature.slice(0, 16)
+        const pendingResponses: Promise<void>[] = []
+
+        let totalVotes = 0
+        let confirmVotes = 0
+
+        this.connectedAddresses.forEach(address => {
+          if (address === exclude) { return }
+  
+          this.connections[address].forEach(connection => {
+            if (connection === exclude) { return }
+            if (!connection || connection.state !== "open") { return }
+
+            const address = connection.address
+            const balance = this.node.table.balances[address]
+            if (!balance || !balance.amount) {
+              connection.send("new_transaction", transactionBuffer)
+              return
+            }
+
+            const votingPower = Math.sqrt(balance.amount)
+
+            pendingResponses.push(
+              connection.sendAndWaitForResponse("new_transaction", confirmTransactionBuffer, responseHeader)
+              .then(response => {
+                if (!response?.verified) { return }
+
+                totalVotes += votingPower
+                if (response.body[0]) {
+                  confirmVotes += votingPower
+                }
+              })
+            )
+          })
+        })
+        await Promise.all(pendingResponses)
+
+        if (confirmVotes >= 0.75 * totalVotes) {
+          return true
+        } else {
+          return false
+        }
+      } else {
+        this.shareWithAll("new_transaction", transactionBuffer, exclude)
+      }
     }
 
     async sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<false | CoinTable.SignedTransaction | null> {
@@ -1022,7 +1088,7 @@ namespace Network {
         Convert.int64ToBuffer(transaction.timestamp)
       )
 
-      const response = await connection.sendAndWaitForResponse("pending_transaction", transactionBuffer, "pending_transaction_signature", true)
+      const response = await connection.sendAndWaitForResponse("pending_transaction", transactionBuffer, "pending_transaction_signature", true, 20_000)
       if (response && response.verified && response.body.byteLength > 0) {
         const signature = Convert.Base58.encode(XorCipher.decrypt(response.body, connection.sharedEncryptionKey))
 

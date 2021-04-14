@@ -11,10 +11,6 @@ declare type NetworkEvents = {
             id?: number;
         };
     };
-    "transaction": {
-        transaction: CoinTable.SignedTransaction;
-        from: string;
-    };
     "connection": {
         address: string;
         host?: string;
@@ -31,9 +27,10 @@ declare abstract class Network extends EventTarget<NetworkEvents> {
     abstract requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | null>;
     abstract requestTable(connectionAddress: string, id?: number): Promise<CoinTable | null>;
     abstract shareTable(table: CoinTable, exclude?: string): Promise<void>;
-    abstract shareTransaction(transaction: CoinTable.SignedTransaction, exclude?: string): Promise<void>;
+    abstract shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: false, exclude?: string): Promise<void>;
+    abstract shareTransaction(transaction: CoinTable.SignedTransaction, confirm: true, exclude?: string): Promise<boolean>;
+    abstract shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: boolean, exclude?: string): Promise<boolean | void>;
     abstract sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<CoinTable.SignedTransaction | false | null>;
-    onRecievingPendingTransaction: (transaction: CoinTable.PendingTransaction, from: string) => Promise<CoinTable.SignedTransaction | false> | CoinTable.SignedTransaction | false;
     protected disposed: boolean;
     dispose(): void;
     protected abstract internalDispose(): void;
@@ -45,7 +42,8 @@ declare namespace Network {
         requestBalance(balanceAddress: string, connectionAddress: string): Promise<CoinTable.SignedBalance | null>;
         requestTable(connectionAddress: string): Promise<CoinTable | null>;
         shareTable(table: CoinTable, excluding: string): Promise<void>;
-        shareTransaction(transaction: CoinTable.SignedTransaction, excluding: string): Promise<void>;
+        shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: false, exclude?: string): Promise<void>;
+        shareTransaction(transaction: CoinTable.SignedTransaction, confirm: true, exclude?: string): Promise<boolean>;
         sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<CoinTable.SignedTransaction | false | null>;
         internalDispose(): void;
     }
@@ -124,7 +122,8 @@ declare namespace Network {
         requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | null>;
         requestTable(connectionAddress: string, id?: number): Promise<CoinTable | null>;
         shareTable(table: CoinTable, excluding?: string | Connection): Promise<void>;
-        shareTransaction(transaction: CoinTable.SignedTransaction, excluding?: string): Promise<void>;
+        shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: false, exclude?: string | Connection): Promise<void>;
+        shareTransaction(transaction: CoinTable.SignedTransaction, confirm: true, exclude?: string | Connection): Promise<boolean>;
         sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<false | CoinTable.SignedTransaction | null>;
         internalDispose(): void;
     }

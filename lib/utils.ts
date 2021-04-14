@@ -60,10 +60,13 @@ export namespace XorCipher {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function deepClone<T extends Record<string, any>>(object: T, newObject: Record<string, any> = {}): T {
+export function deepClone<T extends Record<string, any> | undefined | null>(object: T, newObject: Record<string, any> = {}): T {
+  if (object === null) { return null as unknown as T }
+  if (object === undefined) { return undefined as unknown as T }
+
   for (const key in object) {
     const value = object[key]
-    if (typeof value === "object") {
+    if (typeof value === "object" && value !== null) {
       const newValue = {}
       newObject[key] = newValue
       deepClone(value, newValue)

@@ -44,75 +44,96 @@ export default class Node extends EventTarget<NodeEvents> {
         }
       })
     })
+  }
 
-    this.network.on("transaction", ({ transaction }) => {
-      this.addToQueue(() => {
-        const balances = {
-          sender: this.table.balances[transaction.sender],
-          reciver: this.table.balances[transaction.reciever]
-        }
-        if (
-          balances.sender && transaction.timestamp < balances.sender.timestamp ||
-          balances.reciver && transaction.timestamp < balances.reciver.timestamp
-        ) { return }
+  // Network delegate methods
 
-        if (
-          (balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature !== balances.sender.signature) ||
-          (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature !== balances.sender.signature)
-        ) { // Something wierd is happening, attempt to sync with the network
-          this.network.shareTable(this.table)
-          return
-        }
-
+  async handlePendingTransaction(transaction: CoinTable.PendingTransaction, from: string): Promise<false | CoinTable.SignedTransaction> {
+    const myAddress = this.wallet.public.address
+    const currentBalance = this.table.balances[myAddress] ?? { timestamp: 0 }
+    if (transaction.reciever === myAddress && transaction.sender === from && transaction.timestamp > currentBalance.timestamp) {
+      return this.addToQueue(async () => {
         try {
-          this.table.applyTransaction(transaction)
-          this.network.shareTransaction(transaction)
-
-          this.retryFailedTransactions(transaction)
-
-          this.dispatchEvent("transactioncompleted", deepClone(transaction))
-        } catch (err) {
-          if (!err.message.includes("Transaction timestamp is invalid")) {
-            if (!this.failedTransactions[transaction.sender]) {
-              this.failedTransactions[transaction.sender] = [transaction]
-            } else {
-              this.failedTransactions[transaction.sender].push(transaction)
-            }
-
-            if (!this.failedTransactions[transaction.reciever]) {
-              this.failedTransactions[transaction.reciever] = [transaction]
-            } else {
-              this.failedTransactions[transaction.reciever].push(transaction)
-            }
-          }
-
-          console.error(err)
-        }
-      })
-    })
-
-    this.network.onRecievingPendingTransaction = (transaction, from) => {
-      const myAddress = this.wallet.public.address
-      const currentBalance = this.table.balances[myAddress] ?? { timestamp: 0 }
-      if (transaction.reciever === myAddress && transaction.sender === from && transaction.timestamp > currentBalance.timestamp) {
-        return this.addToQueue(() => {
-          try {
-            const signed = this.wallet.signTransaction(transaction)
+          const signed = this.wallet.signTransaction(transaction)
+          
+          const confirmed = await this.network.shareTransaction(signed, true, from)
+          if (confirmed) {
             this.table.applyTransaction(signed)
-            this.network.shareTransaction(signed)
-  
             this.dispatchEvent("transactioncompleted", deepClone(signed))
             return signed
-          } catch (err) {
-            console.error(err)
-            return false
           }
-        })
+        } catch (err) {
+          console.error(err)
+          return false
+        }
+
+        return false
+      })
+    }
+
+    return false
+  }
+
+  async handleTransaction(transaction: CoinTable.SignedTransaction): Promise<boolean> {
+    return this.addToQueue(() => {
+      const balances = {
+        sender: this.table.balances[transaction.sender],
+        reciver: this.table.balances[transaction.reciever]
+      }
+      if (
+        balances.sender && transaction.timestamp < balances.sender.timestamp ||
+        balances.reciver && transaction.timestamp < balances.reciver.timestamp
+      ) { return false }
+
+      if (
+        (balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature !== balances.sender.signature) ||
+        (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature !== balances.sender.signature)
+      ) { // Something wierd is happening, attempt to sync with the network
+        console.log("Attempting sync")
+        this.network.shareTable(this.table)
+        return false
+      }
+
+      if (
+        (balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
+        (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)
+      ) {
+        console.log("Transaction applied previously")
+        return true
+      }
+
+      try {
+        this.table.applyTransaction(transaction)
+        this.network.shareTransaction(transaction)
+
+        this.retryFailedTransactions(transaction)
+
+        this.dispatchEvent("transactioncompleted", deepClone(transaction))
+        console.log("Transaction completed successfully")
+        return true
+      } catch (err) {
+        if (!err.message.includes("Transaction timestamp is invalid")) {
+          if (!this.failedTransactions[transaction.sender]) {
+            this.failedTransactions[transaction.sender] = [transaction]
+          } else {
+            this.failedTransactions[transaction.sender].push(transaction)
+          }
+
+          if (!this.failedTransactions[transaction.reciever]) {
+            this.failedTransactions[transaction.reciever] = [transaction]
+          } else {
+            this.failedTransactions[transaction.reciever].push(transaction)
+          }
+        }
+
+        console.error(err)
       }
 
       return false
-    }
+    })
   }
+
+
 
   /**
    * @returns A `CoinTable` if there is a new table and `null` if not
@@ -262,7 +283,7 @@ export default class Node extends EventTarget<NodeEvents> {
     })
   }
 
-  async sendTransaction(amount: number, reciever: string): Promise<boolean> {
+  async sendTransaction(amount: number, reciever: string): Promise<boolean | null> {
     reciever = Convert.Base58.normalize(reciever)
     return this.addToQueue(async () => {
       console.log("sending transaction", amount, reciever)
@@ -271,14 +292,21 @@ export default class Node extends EventTarget<NodeEvents> {
 
       if (signed) {
         try {
-          this.table.applyTransaction(signed)
-          this.network.shareTransaction(signed)
+          const valid = this.wallet.verifyTansaction(signed)
+          if (!valid) { return false }
 
-          this.dispatchEvent("transactioncompleted", deepClone(signed))
-          return true
+          const confirmed = await this.network.shareTransaction(signed, true)
+          if (confirmed) {
+            this.table.applyTransaction(signed)
+            this.dispatchEvent("transactioncompleted", deepClone(signed))
+
+            return true
+          }
         } catch (err) {
           console.error(err)
         }
+      } else {
+        return signed
       }
 
       return false

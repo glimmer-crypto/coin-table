@@ -22,6 +22,7 @@ class Network extends utils_1.EventTarget {
     constructor(wallet) {
         super();
         this.connectedAddresses = new Set();
+        // onRecievingPendingTransaction: (transaction: CoinTable.PendingTransaction, from: string) => Promise<CoinTable.SignedTransaction | false> | CoinTable.SignedTransaction | false
         this.disposed = false;
         this.wallet = wallet;
     }
@@ -66,18 +67,22 @@ class Network extends utils_1.EventTarget {
                 return recieverNetwork.dispatchEvent("tabledigest", { digest: table.digest, from: { address: this.wallet.public.address } });
             }));
         }
-        async shareTransaction(transaction, excluding) {
+        async shareTransaction(transaction, confirm, excluding) {
             await new Promise(r => setTimeout(r, 250));
             await Promise.all(Array.from(this.connectedAddresses).map(connId => {
                 if (connId === excluding) {
                     return;
                 }
-                const recieverNetwork = this.connections[connId].network;
-                return recieverNetwork.dispatchEvent("transaction", { transaction, from: this.wallet.public.address });
+                const recieverNode = this.connections[connId];
+                if (confirm) {
+                    return recieverNode.handleTransaction(transaction);
+                }
+                else {
+                    recieverNode.handleTransaction(transaction);
+                }
             }));
         }
         async sendPendingTransaction(transaction) {
-            var _a, _b;
             let sendTo = null;
             if (transaction.sender === this.wallet.public.address) {
                 sendTo = transaction.reciever;
@@ -88,9 +93,9 @@ class Network extends utils_1.EventTarget {
             if (!sendTo || !this.connections[sendTo]) {
                 return null;
             }
-            const recieverNetwork = this.connections[sendTo].network;
+            const recieverNode = this.connections[sendTo]; // .network as Local
             await new Promise(r => setTimeout(r, 250));
-            return (_b = await ((_a = recieverNetwork.onRecievingPendingTransaction) === null || _a === void 0 ? void 0 : _a.call(recieverNetwork, transaction, this.wallet.public.address))) !== null && _b !== void 0 ? _b : null;
+            return recieverNode.handlePendingTransaction(transaction, this.wallet.public.address); // recieverNetwork.onRecievingPendingTransaction?.(transaction, this.wallet.public.address) ?? null
         }
         internalDispose() {
             this.connections = {};
@@ -242,7 +247,6 @@ class Network extends utils_1.EventTarget {
             this.dispatchEvent("message", data);
         }
         async handleMessage(data) {
-            var _a, _b;
             if (data.header === "get_balance") {
                 const address = utils_1.Convert.Base58.encode(data.body);
                 const balance = this.network.node.table.balances[address];
@@ -274,7 +278,15 @@ class Network extends utils_1.EventTarget {
                 const transaction = {
                     sender, senderSignature, senderTransactionSignature, reciever, recieverSignature, amount, timestamp
                 };
-                this.network.dispatchEvent("transaction", { transaction, from: this.address });
+                if (startIndex < data.body.length && data.body[data.body.length - 1]) { // Requested a response
+                    const response = await this.network.node.handleTransaction(transaction);
+                    const responseBuffer = new Uint8Array(response ? [1] : []);
+                    const responseHeader = "transaction_result_" + senderSignature.slice(0, 16);
+                    this.send(responseHeader, responseBuffer);
+                }
+                else {
+                    this.network.node.handleTransaction(transaction);
+                }
             }
             else if (data.header === "pending_transaction") {
                 data.body = utils_1.XorCipher.decrypt(data.body, this.sharedEncryptionKey);
@@ -288,7 +300,7 @@ class Network extends utils_1.EventTarget {
                 const pendingTransaction = {
                     sender, senderSignature, senderTransactionSignature, reciever, amount, timestamp
                 };
-                const response = await ((_b = (_a = this.network).onRecievingPendingTransaction) === null || _b === void 0 ? void 0 : _b.call(_a, pendingTransaction, this.address));
+                const response = await this.network.node.handlePendingTransaction(pendingTransaction, this.address); //onRecievingPendingTransaction?.(pendingTransaction, this.address)
                 if (response) {
                     const recieverSignature = utils_1.Convert.Base58.decodeBuffer(response.recieverSignature);
                     this.send("pending_transaction_signature", recieverSignature, true);
@@ -833,9 +845,55 @@ class Network extends utils_1.EventTarget {
         async shareTable(table, excluding) {
             this.shareWithAll("new_table", table.digest, excluding);
         }
-        async shareTransaction(transaction, excluding) {
+        async shareTransaction(transaction, confirm, exclude) {
             const transactionBuffer = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(transaction.sender, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderTransactionSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.reciever, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.recieverSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.int64ToBuffer(transaction.amount), utils_1.Convert.int64ToBuffer(transaction.timestamp));
-            this.shareWithAll("new_transaction", transactionBuffer, excluding);
+            if (confirm) {
+                const confirmTransactionBuffer = utils_1.Buffer.concat(transactionBuffer, [1]);
+                const responseHeader = "transaction_result_" + transaction.senderSignature.slice(0, 16);
+                const pendingResponses = [];
+                let totalVotes = 0;
+                let confirmVotes = 0;
+                this.connectedAddresses.forEach(address => {
+                    if (address === exclude) {
+                        return;
+                    }
+                    this.connections[address].forEach(connection => {
+                        if (connection === exclude) {
+                            return;
+                        }
+                        if (!connection || connection.state !== "open") {
+                            return;
+                        }
+                        const address = connection.address;
+                        const balance = this.node.table.balances[address];
+                        if (!balance || !balance.amount) {
+                            connection.send("new_transaction", transactionBuffer);
+                            return;
+                        }
+                        const votingPower = Math.sqrt(balance.amount);
+                        pendingResponses.push(connection.sendAndWaitForResponse("new_transaction", confirmTransactionBuffer, responseHeader)
+                            .then(response => {
+                            if (!(response === null || response === void 0 ? void 0 : response.verified)) {
+                                return;
+                            }
+                            totalVotes += votingPower;
+                            if (response.body[0]) {
+                                confirmVotes += votingPower;
+                            }
+                        }));
+                    });
+                });
+                await Promise.all(pendingResponses);
+                if (confirmVotes >= 0.75 * totalVotes) {
+                    return true;
+                }
+                else {
+                    return false;
+                }
+            }
+            else {
+                this.shareWithAll("new_transaction", transactionBuffer, exclude);
+            }
         }
         async sendPendingTransaction(transaction) {
             var _a;
@@ -847,7 +905,7 @@ class Network extends utils_1.EventTarget {
                 return null;
             }
             const transactionBuffer = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(transaction.sender, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer((_a = transaction.senderSignature) !== null && _a !== void 0 ? _a : "1", Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderTransactionSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.reciever, Key_1.default.Public.LENGTH), utils_1.Convert.int64ToBuffer(transaction.amount), utils_1.Convert.int64ToBuffer(transaction.timestamp));
-            const response = await connection.sendAndWaitForResponse("pending_transaction", transactionBuffer, "pending_transaction_signature", true);
+            const response = await connection.sendAndWaitForResponse("pending_transaction", transactionBuffer, "pending_transaction_signature", true, 20000);
             if (response && response.verified && response.body.byteLength > 0) {
                 const signature = utils_1.Convert.Base58.encode(utils_1.XorCipher.decrypt(response.body, connection.sharedEncryptionKey));
                 const signedTransaction = utils_1.deepClone(transaction);
