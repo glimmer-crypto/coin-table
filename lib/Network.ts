@@ -158,7 +158,6 @@ namespace Network {
 
     constructor(connectionAddress: string, uniqueId: number, parentNetwork: Client) {
       super()
-      console.log("Connection created", connectionAddress, uniqueId)
 
       this.address = connectionAddress
       this.uniqueId = uniqueId
@@ -193,13 +192,14 @@ namespace Network {
 
     protected internalOpenHandler() {
       if (this.state !== "connecting") { return } // Only run if state is currently in "connecting"
-      console.log("Connection opened", this.address, this.uniqueId)
 
       const connections = this.network["connections"]
 
       const connectionBuffers: Uint8Array[] = []
       this.network.connectedAddresses.forEach(addr => {
         connections[addr].forEach(connection => {
+          if (connection.state !== "open") { return }
+
           connectionBuffers.push(Buffer.concat(
             Convert.Base58.decodeBuffer(addr, Key.Public.LENGTH),
             Convert.int32ToBuffer(connection.uniqueId)
@@ -269,13 +269,12 @@ namespace Network {
     }
 
     protected internalClosedHandler() {
+      this.network.deleteConnection(this.address, this)
+
       if (this.state !== "open") {
         this.state = "closed"
         return
       } // Only run if connection is open
-      console.log("Connection closed", this.address, this.uniqueId)
-
-      this.network.deleteConnection(this.address, this)
 
       this.state = "closed"
       this.dispatchEvent("close")
@@ -297,7 +296,6 @@ namespace Network {
       }
 
       this.internalSend(this.createMessage(header, body))
-      console.log("Sent message to", this.address.slice(0, 8), header, encrypted ? "encrypted" : "not encrypted")
     }
 
     private pendingResponses: { [responseHeader: string]: ((value: Message | null) => void) | undefined } = {}
@@ -321,8 +319,6 @@ namespace Network {
         console.error("Invalid message recieved from", this.address.slice(0, 8), err)
         return
       }
-      
-      console.log("Recieved message from", this.address.slice(0, 8), data.header, data.verified ? "verified" : "not verified")
 
       if (data.verified) {
         try {
@@ -416,42 +412,30 @@ namespace Network {
 
         this.insertNeighbor(connectionAddress, uniqueId)
 
-        let ignoreProbability = 0
-        if (!(this.network instanceof Server)) {
-          const totalConnections = this.network.totalConnections
-          ignoreProbability = totalConnections / 100
-        }
-
         const currentConnection = this.network.getConnection(connectionAddress, uniqueId)
         const alreadyConnected = currentConnection && currentConnection.state !== "closed"
-        if (!alreadyConnected && Math.random() > ignoreProbability) {
+        if (!alreadyConnected) {
           const host = Convert.bufferToString(data.body.subarray(Key.Public.LENGTH + 4))
-
-          console.log("New server", connectionAddress.slice(0, 8), host)
 
           this.network.connectToWebSocket(host, connectionAddress)
         }
       } else if (data.header === "connections") {
-        const connections: string[] = []
         let startIndex = 0
         while (startIndex < data.body.byteLength) {
           const connectionAddress = Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key.Public.LENGTH))
           const uniqueId = Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4))
-          connections.push(connectionAddress + "/" + uniqueId)
 
           this.insertNeighbor(connectionAddress, uniqueId)
         }
 
-        console.log("connections", connections)
       } else if (data.header === "new_connection" && this.network instanceof Client && !(this.network instanceof Server)) {
         const connectionAddress = Convert.Base58.encode(data.body.subarray(0, Key.Public.LENGTH))
         const uniqueId = Convert.bufferToInt(data.body.subarray(Key.Public.LENGTH))
         this.insertNeighbor(connectionAddress, uniqueId)
-        console.log("Recieved connection event for", connectionAddress.slice(0, 8), "from", this.address.slice(0, 8))
 
         const connection = this.network.getConnection(connectionAddress, uniqueId)
         if (!connection || connection.state === "closed") {
-          const totalConnections = this.network.totalConnections
+          const totalConnections = this.network.allConnections.size
           const ignoreProbability = totalConnections / 100
 
           if (Math.random() > ignoreProbability) {
@@ -467,17 +451,20 @@ namespace Network {
         let startIndex = 0
         const connectionAddress = Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key.Public.LENGTH))
         const uniqueId = Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4))
-        console.log("Recieved WebRTC signaling message from ", this.address.slice(0, 8), "for", connectionAddress.slice(0, 8))
-        const connection = this.network.getConnection(connectionAddress, uniqueId) //this.network.connections[connectionAddress]
+        const connection = this.network.getConnection(connectionAddress, uniqueId)
 
-        const responseHeader = "rtc_answer_" + this.address.slice(0, 8) + "-" + connectionAddress.slice(0, 8)
+        if (connection && connection.state === "open") {
+          const responseHeader = "rtc_answer_" + this.address.slice(0, 8) + "-" + connectionAddress.slice(0, 8)
 
-        const message = data.body
-        message.set(Convert.Base58.decodeBuffer(this.address, Key.Public.LENGTH))
-        message.set(Convert.int32ToBuffer(this.uniqueId), Key.Public.LENGTH)
-        const response = await connection?.sendAndWaitForResponse("rtc_offer", message, responseHeader)
-        if (response) {
-          this.send("rtc_answer_" + connectionAddress.slice(0, 8), response.body)
+          const message = data.body
+          message.set(Convert.Base58.decodeBuffer(this.address, Key.Public.LENGTH))
+          message.set(Convert.int32ToBuffer(this.uniqueId), Key.Public.LENGTH)
+          const response = await connection?.sendAndWaitForResponse("rtc_offer", message, responseHeader)
+          if (response) {
+            this.send("rtc_answer_" + connectionAddress.slice(0, 8), response.body)
+          }
+        } else {
+          this.send("rtc_answer_" + connectionAddress.slice(0, 8), new Uint8Array([]))
         }
       } else if (data.header === "rtc_offer" && this instanceof WebSocketConnection && !(this.network instanceof Server)) {
         let startIndex = 0
@@ -486,7 +473,6 @@ namespace Network {
 
         const connection = this.network.getConnection(connectionAddress, uniqueId)
         if (!connection || connection.state === "closed") {
-          console.log("Recieved RTC offer from", connectionAddress.slice(0, 8), "via", this.address.slice(0, 8))
 
           const peerConnection = new RTCPeerConnection({
             iceServers: [{ urls: "stun:stun2.l.google.com:19302" }]
@@ -577,7 +563,7 @@ namespace Network {
           )
   
           const response = await this.sendAndWaitForResponse("rtc_offer_forward", toAndOffer, "rtc_answer_" + connectionAddress.slice(0, 8))
-          if (response) {
+          if (response && response.body.length) {
             const answerSdp = Convert.bufferToString(XorCipher.decrypt(response.body, sharedKey), true)
             peerConnection.setRemoteDescription({
               sdp: answerSdp,
@@ -604,7 +590,6 @@ namespace Network {
 
     constructor(webSocket: WS, connectionAddress: string, uniqueId: number, parent: Network.Client, host?: string) {
       super(connectionAddress, uniqueId, parent)
-      console.log("Created WebSocket connection with", connectionAddress.slice(0, 8))
 
       this.serverHost = host
       
@@ -624,7 +609,6 @@ namespace Network {
       }
 
       webSocket.addEventListener("close", () => {
-        console.log("WebSocket closed", this.address.slice(0, 8))
         this.internalClosedHandler()
       })
 
@@ -635,7 +619,7 @@ namespace Network {
           const buf = new Uint8Array(data)
           this.internalMessageHandler(buf)
         } else {
-          console.log("Recieved message of unexpected type", connectionAddress.slice(0, 8), data)
+          console.error("Recieved message of unexpected type", connectionAddress.slice(0, 8), data)
         }
       })
     }
@@ -697,8 +681,11 @@ namespace Network {
       channel.onopen = () => {
         super.internalOpenHandler()
       }
-      channel.onerror = (event) => {
+      channel.onerror = event => {
         console.error(event.error)
+        super.internalClosedHandler()
+      }
+      channel.onclose = () => {
         super.internalClosedHandler()
       }
 
@@ -707,7 +694,7 @@ namespace Network {
         if (data instanceof ArrayBuffer) {
           this.recieveMessageSlice(new Uint8Array(data))
         } else {
-          console.log("Recieved message of unexpected type", this.address.slice(0, 8), data)
+          console.error("Recieved message of unexpected type", this.address.slice(0, 8), data)
         }
       }
     }
@@ -777,7 +764,8 @@ namespace Network {
   }
 
   export class Client extends Network {
-    totalConnections = 0
+    // totalConnections = 0
+    allConnections = new Set<Connection>()
     protected connections: { [walletAddress: string]: Set<Connection> } = {}
     cachedServers: { [walletAddress: string]: string } = {}
     uniqueId = Math.floor(Math.random() * 0xFFFFFFFF)
@@ -824,9 +812,7 @@ namespace Network {
 
     async connectToWebSocket(host: string, connectionAddress?: string): Promise<WebSocketConnection | null> {
       if (connectionAddress) {
-        this.cachedServers[connectionAddress] = host
-
-        if (this instanceof Server && (host === this.publicHost || connectionAddress === this.wallet.public.address)) { return null }
+        if (this instanceof Server && host === this.publicHost) { return null }
 
         const connection = this.bestConnection(connectionAddress)
         if (connection instanceof WebSocketConnection && connection.state === "open") { return connection }
@@ -913,20 +899,18 @@ namespace Network {
       const connections = this.connections[address]
       if (connections) {
         if (!connections.has(connection)) {
-          this.totalConnections += 1
           connections.add(connection)
         }
       } else {
-        this.totalConnections += 1
         this.connections[address] = new Set([connection])
       }
+
+      this.allConnections.add(connection)
     }
 
     deleteConnection(address: string, connection: Connection): void {
-      const connections = this.connections[address]
-      if (connections?.delete(connection)) {
-        this.totalConnections -= 1
-      }
+      this.connections[address]?.delete(connection)
+      this.allConnections.delete(connection)
     }
 
     getConnection(address: string, id: number): Connection | null {
@@ -1033,31 +1017,38 @@ namespace Network {
 
         this.connectedAddresses.forEach(address => {
           if (address === exclude) { return }
+
+          const bestConnection = this.bestConnection(address)
+          if (!bestConnection) { return }
+
+          const balance = this.node.table.balances[address]
+          if (!balance || !balance.amount) {
+            bestConnection.send("new_transaction", transactionBuffer)
+            return
+          }
+
+          const votingPower = Math.sqrt(balance.amount)
+
+          pendingResponses.push(
+            bestConnection.sendAndWaitForResponse("new_transaction", confirmTransactionBuffer, responseHeader)
+            .then(response => {
+              if (!response?.verified) { return }
+
+              totalVotes += votingPower
+              if (response.body[0]) {
+                confirmVotes += votingPower
+              }
+            })
+          )
+
+          const allConnections = this.connections[address]
+          if (allConnections.size <= 1) { return }
   
-          this.connections[address].forEach(connection => {
-            if (connection === exclude) { return }
+          allConnections.forEach(connection => {
+            if (connection === bestConnection || connection === exclude) { return }
             if (!connection || connection.state !== "open") { return }
-
-            const address = connection.address
-            const balance = this.node.table.balances[address]
-            if (!balance || !balance.amount) {
-              connection.send("new_transaction", transactionBuffer)
-              return
-            }
-
-            const votingPower = Math.sqrt(balance.amount)
-
-            pendingResponses.push(
-              connection.sendAndWaitForResponse("new_transaction", confirmTransactionBuffer, responseHeader)
-              .then(response => {
-                if (!response?.verified) { return }
-
-                totalVotes += votingPower
-                if (response.body[0]) {
-                  confirmVotes += votingPower
-                }
-              })
-            )
+            
+            connection.send("new_transaction", transactionBuffer)
           })
         })
         await Promise.all(pendingResponses)

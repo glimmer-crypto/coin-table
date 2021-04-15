@@ -103,7 +103,7 @@ declare namespace Network {
         close(): void;
     }
     export class Client extends Network {
-        totalConnections: number;
+        allConnections: Set<Connection>;
         protected connections: {
             [walletAddress: string]: Set<Connection>;
         };

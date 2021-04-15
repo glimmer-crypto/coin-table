@@ -109,7 +109,6 @@ class Network extends utils_1.EventTarget {
             this.state = "connecting";
             this.neighbors = new Map();
             this.pendingResponses = {};
-            console.log("Connection created", connectionAddress, uniqueId);
             this.address = connectionAddress;
             this.uniqueId = uniqueId;
             this.network = parentNetwork;
@@ -139,11 +138,13 @@ class Network extends utils_1.EventTarget {
             if (this.state !== "connecting") {
                 return;
             } // Only run if state is currently in "connecting"
-            console.log("Connection opened", this.address, this.uniqueId);
             const connections = this.network["connections"];
             const connectionBuffers = [];
             this.network.connectedAddresses.forEach(addr => {
                 connections[addr].forEach(connection => {
+                    if (connection.state !== "open") {
+                        return;
+                    }
                     connectionBuffers.push(utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(addr, Key_1.default.Public.LENGTH), utils_1.Convert.int32ToBuffer(connection.uniqueId)));
                 });
             });
@@ -191,12 +192,11 @@ class Network extends utils_1.EventTarget {
             this.network.dispatchEvent("connection", { address: this.address, host });
         }
         internalClosedHandler() {
+            this.network.deleteConnection(this.address, this);
             if (this.state !== "open") {
                 this.state = "closed";
                 return;
             } // Only run if connection is open
-            console.log("Connection closed", this.address, this.uniqueId);
-            this.network.deleteConnection(this.address, this);
             this.state = "closed";
             this.dispatchEvent("close");
             this.network.dispatchEvent("disconnection", { address: this.address });
@@ -209,7 +209,6 @@ class Network extends utils_1.EventTarget {
                 body = utils_1.XorCipher.encrypt(body, this.sharedEncryptionKey);
             }
             this.internalSend(this.createMessage(header, body));
-            console.log("Sent message to", this.address.slice(0, 8), header, encrypted ? "encrypted" : "not encrypted");
         }
         sendAndWaitForResponse(header, body, responseHeader, encrypt, timeout = 10000) {
             this.send(header, body, encrypt);
@@ -230,7 +229,6 @@ class Network extends utils_1.EventTarget {
                 console.error("Invalid message recieved from", this.address.slice(0, 8), err);
                 return;
             }
-            console.log("Recieved message from", this.address.slice(0, 8), data.header, data.verified ? "verified" : "not verified");
             if (data.verified) {
                 try {
                     await this.handleMessage(data);
@@ -313,38 +311,28 @@ class Network extends utils_1.EventTarget {
                 const connectionAddress = utils_1.Convert.Base58.encode(data.body.subarray(0, Key_1.default.Public.LENGTH));
                 const uniqueId = utils_1.Convert.bufferToInt(data.body.subarray(Key_1.default.Public.LENGTH, Key_1.default.Public.LENGTH + 4));
                 this.insertNeighbor(connectionAddress, uniqueId);
-                let ignoreProbability = 0;
-                if (!(this.network instanceof Server)) {
-                    const totalConnections = this.network.totalConnections;
-                    ignoreProbability = totalConnections / 100;
-                }
                 const currentConnection = this.network.getConnection(connectionAddress, uniqueId);
                 const alreadyConnected = currentConnection && currentConnection.state !== "closed";
-                if (!alreadyConnected && Math.random() > ignoreProbability) {
+                if (!alreadyConnected) {
                     const host = utils_1.Convert.bufferToString(data.body.subarray(Key_1.default.Public.LENGTH + 4));
-                    console.log("New server", connectionAddress.slice(0, 8), host);
                     this.network.connectToWebSocket(host, connectionAddress);
                 }
             }
             else if (data.header === "connections") {
-                const connections = [];
                 let startIndex = 0;
                 while (startIndex < data.body.byteLength) {
                     const connectionAddress = utils_1.Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key_1.default.Public.LENGTH));
                     const uniqueId = utils_1.Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4));
-                    connections.push(connectionAddress + "/" + uniqueId);
                     this.insertNeighbor(connectionAddress, uniqueId);
                 }
-                console.log("connections", connections);
             }
             else if (data.header === "new_connection" && this.network instanceof Client && !(this.network instanceof Server)) {
                 const connectionAddress = utils_1.Convert.Base58.encode(data.body.subarray(0, Key_1.default.Public.LENGTH));
                 const uniqueId = utils_1.Convert.bufferToInt(data.body.subarray(Key_1.default.Public.LENGTH));
                 this.insertNeighbor(connectionAddress, uniqueId);
-                console.log("Recieved connection event for", connectionAddress.slice(0, 8), "from", this.address.slice(0, 8));
                 const connection = this.network.getConnection(connectionAddress, uniqueId);
                 if (!connection || connection.state === "closed") {
-                    const totalConnections = this.network.totalConnections;
+                    const totalConnections = this.network.allConnections.size;
                     const ignoreProbability = totalConnections / 100;
                     if (Math.random() > ignoreProbability) {
                         this.signalForWebRTCConnection(connectionAddress, uniqueId);
@@ -360,15 +348,19 @@ class Network extends utils_1.EventTarget {
                 let startIndex = 0;
                 const connectionAddress = utils_1.Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key_1.default.Public.LENGTH));
                 const uniqueId = utils_1.Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4));
-                console.log("Recieved WebRTC signaling message from ", this.address.slice(0, 8), "for", connectionAddress.slice(0, 8));
-                const connection = this.network.getConnection(connectionAddress, uniqueId); //this.network.connections[connectionAddress]
-                const responseHeader = "rtc_answer_" + this.address.slice(0, 8) + "-" + connectionAddress.slice(0, 8);
-                const message = data.body;
-                message.set(utils_1.Convert.Base58.decodeBuffer(this.address, Key_1.default.Public.LENGTH));
-                message.set(utils_1.Convert.int32ToBuffer(this.uniqueId), Key_1.default.Public.LENGTH);
-                const response = await (connection === null || connection === void 0 ? void 0 : connection.sendAndWaitForResponse("rtc_offer", message, responseHeader));
-                if (response) {
-                    this.send("rtc_answer_" + connectionAddress.slice(0, 8), response.body);
+                const connection = this.network.getConnection(connectionAddress, uniqueId);
+                if (connection && connection.state === "open") {
+                    const responseHeader = "rtc_answer_" + this.address.slice(0, 8) + "-" + connectionAddress.slice(0, 8);
+                    const message = data.body;
+                    message.set(utils_1.Convert.Base58.decodeBuffer(this.address, Key_1.default.Public.LENGTH));
+                    message.set(utils_1.Convert.int32ToBuffer(this.uniqueId), Key_1.default.Public.LENGTH);
+                    const response = await (connection === null || connection === void 0 ? void 0 : connection.sendAndWaitForResponse("rtc_offer", message, responseHeader));
+                    if (response) {
+                        this.send("rtc_answer_" + connectionAddress.slice(0, 8), response.body);
+                    }
+                }
+                else {
+                    this.send("rtc_answer_" + connectionAddress.slice(0, 8), new Uint8Array([]));
                 }
             }
             else if (data.header === "rtc_offer" && this instanceof WebSocketConnection && !(this.network instanceof Server)) {
@@ -377,7 +369,6 @@ class Network extends utils_1.EventTarget {
                 const uniqueId = utils_1.Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4));
                 const connection = this.network.getConnection(connectionAddress, uniqueId);
                 if (!connection || connection.state === "closed") {
-                    console.log("Recieved RTC offer from", connectionAddress.slice(0, 8), "via", this.address.slice(0, 8));
                     const peerConnection = new RTCPeerConnection({
                         iceServers: [{ urls: "stun:stun2.l.google.com:19302" }]
                     });
@@ -445,7 +436,7 @@ class Network extends utils_1.EventTarget {
                     const encryptedOffer = utils_1.XorCipher.encrypt(utils_1.Convert.stringToBuffer(localDescription.sdp, true), sharedKey);
                     const toAndOffer = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(connectionAddress, Key_1.default.Public.LENGTH), utils_1.Convert.int32ToBuffer(uniqueId), encryptedOffer);
                     const response = await this.sendAndWaitForResponse("rtc_offer_forward", toAndOffer, "rtc_answer_" + connectionAddress.slice(0, 8));
-                    if (response) {
+                    if (response && response.body.length) {
                         const answerSdp = utils_1.Convert.bufferToString(utils_1.XorCipher.decrypt(response.body, sharedKey), true);
                         peerConnection.setRemoteDescription({
                             sdp: answerSdp,
@@ -464,7 +455,6 @@ class Network extends utils_1.EventTarget {
         constructor(webSocket, connectionAddress, uniqueId, parent, host) {
             super(connectionAddress, uniqueId, parent);
             this.connectionTimestamp = Date.now();
-            console.log("Created WebSocket connection with", connectionAddress.slice(0, 8));
             this.serverHost = host;
             webSocket.binaryType = "arraybuffer";
             this.webSocket = webSocket;
@@ -482,7 +472,6 @@ class Network extends utils_1.EventTarget {
                 });
             }
             webSocket.addEventListener("close", () => {
-                console.log("WebSocket closed", this.address.slice(0, 8));
                 this.internalClosedHandler();
             });
             webSocket.addEventListener("message", event => {
@@ -492,7 +481,7 @@ class Network extends utils_1.EventTarget {
                     this.internalMessageHandler(buf);
                 }
                 else {
-                    console.log("Recieved message of unexpected type", connectionAddress.slice(0, 8), data);
+                    console.error("Recieved message of unexpected type", connectionAddress.slice(0, 8), data);
                 }
             });
         }
@@ -539,8 +528,11 @@ class Network extends utils_1.EventTarget {
             channel.onopen = () => {
                 super.internalOpenHandler();
             };
-            channel.onerror = (event) => {
+            channel.onerror = event => {
                 console.error(event.error);
+                super.internalClosedHandler();
+            };
+            channel.onclose = () => {
                 super.internalClosedHandler();
             };
             channel.onmessage = (event) => {
@@ -549,7 +541,7 @@ class Network extends utils_1.EventTarget {
                     this.recieveMessageSlice(new Uint8Array(data));
                 }
                 else {
-                    console.log("Recieved message of unexpected type", this.address.slice(0, 8), data);
+                    console.error("Recieved message of unexpected type", this.address.slice(0, 8), data);
                 }
             };
         }
@@ -612,7 +604,8 @@ class Network extends utils_1.EventTarget {
     class Client extends Network {
         constructor(wallet) {
             super(wallet);
-            this.totalConnections = 0;
+            // totalConnections = 0
+            this.allConnections = new Set();
             this.connections = {};
             this.cachedServers = {};
             this.uniqueId = Math.floor(Math.random() * 0xFFFFFFFF);
@@ -657,8 +650,7 @@ class Network extends utils_1.EventTarget {
         }
         async connectToWebSocket(host, connectionAddress) {
             if (connectionAddress) {
-                this.cachedServers[connectionAddress] = host;
-                if (this instanceof Server && (host === this.publicHost || connectionAddress === this.wallet.public.address)) {
+                if (this instanceof Server && host === this.publicHost) {
                     return null;
                 }
                 const connection = this.bestConnection(connectionAddress);
@@ -746,20 +738,18 @@ class Network extends utils_1.EventTarget {
             const connections = this.connections[address];
             if (connections) {
                 if (!connections.has(connection)) {
-                    this.totalConnections += 1;
                     connections.add(connection);
                 }
             }
             else {
-                this.totalConnections += 1;
                 this.connections[address] = new Set([connection]);
             }
+            this.allConnections.add(connection);
         }
         deleteConnection(address, connection) {
-            const connections = this.connections[address];
-            if (connections === null || connections === void 0 ? void 0 : connections.delete(connection)) {
-                this.totalConnections -= 1;
-            }
+            var _a;
+            (_a = this.connections[address]) === null || _a === void 0 ? void 0 : _a.delete(connection);
+            this.allConnections.delete(connection);
         }
         getConnection(address, id) {
             const connections = this.connections[address];
@@ -857,30 +847,38 @@ class Network extends utils_1.EventTarget {
                     if (address === exclude) {
                         return;
                     }
-                    this.connections[address].forEach(connection => {
-                        if (connection === exclude) {
+                    const bestConnection = this.bestConnection(address);
+                    if (!bestConnection) {
+                        return;
+                    }
+                    const balance = this.node.table.balances[address];
+                    if (!balance || !balance.amount) {
+                        bestConnection.send("new_transaction", transactionBuffer);
+                        return;
+                    }
+                    const votingPower = Math.sqrt(balance.amount);
+                    pendingResponses.push(bestConnection.sendAndWaitForResponse("new_transaction", confirmTransactionBuffer, responseHeader)
+                        .then(response => {
+                        if (!(response === null || response === void 0 ? void 0 : response.verified)) {
+                            return;
+                        }
+                        totalVotes += votingPower;
+                        if (response.body[0]) {
+                            confirmVotes += votingPower;
+                        }
+                    }));
+                    const allConnections = this.connections[address];
+                    if (allConnections.size <= 1) {
+                        return;
+                    }
+                    allConnections.forEach(connection => {
+                        if (connection === bestConnection || connection === exclude) {
                             return;
                         }
                         if (!connection || connection.state !== "open") {
                             return;
                         }
-                        const address = connection.address;
-                        const balance = this.node.table.balances[address];
-                        if (!balance || !balance.amount) {
-                            connection.send("new_transaction", transactionBuffer);
-                            return;
-                        }
-                        const votingPower = Math.sqrt(balance.amount);
-                        pendingResponses.push(connection.sendAndWaitForResponse("new_transaction", confirmTransactionBuffer, responseHeader)
-                            .then(response => {
-                            if (!(response === null || response === void 0 ? void 0 : response.verified)) {
-                                return;
-                            }
-                            totalVotes += votingPower;
-                            if (response.body[0]) {
-                                confirmVotes += votingPower;
-                            }
-                        }));
+                        connection.send("new_transaction", transactionBuffer);
                     });
                 });
                 await Promise.all(pendingResponses);
