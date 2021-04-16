@@ -51,7 +51,10 @@ class Network extends utils_1.EventTarget {
         async requestBalance(balanceAddress, connectionAddress) {
             var _a;
             const connection = this.connections[connectionAddress];
-            return (_a = connection.table.balances[balanceAddress]) !== null && _a !== void 0 ? _a : null;
+            if (!connection) {
+                return null;
+            }
+            return (_a = connection.table.balances[balanceAddress]) !== null && _a !== void 0 ? _a : false;
         }
         async requestTable(connectionAddress) {
             const connection = this.connections[connectionAddress];
@@ -199,7 +202,7 @@ class Network extends utils_1.EventTarget {
             this.network.shareWithAll("connection_closed", utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(this.address, Key_1.default.Public.LENGTH), utils_1.Convert.int32ToBuffer(this.uniqueId)));
         }
         send(header, body, encrypted) {
-            console.log("Sending message", header, encrypted ? "encrypted" : "not encrypted");
+            console.log("Sending message", this.address.slice(0, 8), header, encrypted ? "encrypted" : "not encrypted");
             if (encrypted) {
                 body = utils_1.XorCipher.encrypt(body, this.sharedEncryptionKey);
             }
@@ -243,12 +246,17 @@ class Network extends utils_1.EventTarget {
             if (!data.verified) {
                 return;
             }
-            console.log("Recieved message", data.header);
+            console.log("Recieved message", this.address.slice(0, 8), data.header);
             if (data.header === "get_balance") {
                 const address = utils_1.Convert.Base58.encode(data.body);
                 const balance = this.network.node.table.balances[address];
                 const responseHeader = "response_balance_" + address.slice(0, 8);
-                this.send(responseHeader, utils_1.Buffer.concat(utils_1.Convert.int64ToBuffer(balance.amount), utils_1.Convert.int64ToBuffer(balance.timestamp), utils_1.Convert.Base58.decodeBuffer(balance.signature)));
+                if (balance) {
+                    this.send(responseHeader, utils_1.Buffer.concat(utils_1.Convert.int64ToBuffer(balance.amount), utils_1.Convert.int64ToBuffer(balance.timestamp), utils_1.Convert.Base58.decodeBuffer(balance.signature)));
+                }
+                else {
+                    this.send(responseHeader, new Uint8Array);
+                }
             }
             else if (data.header === "get_table") {
                 const tableBuf = this.network.node.table.exportBuffer();
@@ -311,7 +319,7 @@ class Network extends utils_1.EventTarget {
                 const pendingTransaction = {
                     sender, senderSignature, senderTransactionSignature, reciever, amount, timestamp
                 };
-                const response = await this.network.node.handlePendingTransaction(pendingTransaction, this.address); //onRecievingPendingTransaction?.(pendingTransaction, this.address)
+                const response = await this.network.node.handlePendingTransaction(pendingTransaction, this.address);
                 if (response) {
                     const recieverSignature = utils_1.Convert.Base58.decodeBuffer(response.recieverSignature);
                     this.send("pending_transaction_signature", recieverSignature, true);
@@ -450,7 +458,7 @@ class Network extends utils_1.EventTarget {
                     const encryptedOffer = utils_1.XorCipher.encrypt(utils_1.Convert.stringToBuffer(localDescription.sdp, true), sharedKey);
                     const toAndOffer = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(connectionAddress, Key_1.default.Public.LENGTH), utils_1.Convert.int32ToBuffer(uniqueId), encryptedOffer);
                     const response = await this.sendAndWaitForResponse("rtc_offer_forward", toAndOffer, "rtc_answer_" + connectionAddress.slice(0, 8));
-                    if (response && response.body.length) {
+                    if ((response === null || response === void 0 ? void 0 : response.verified) && response.body.length) {
                         const answerSdp = utils_1.Convert.bufferToString(utils_1.XorCipher.decrypt(response.body, sharedKey), true);
                         peerConnection.setRemoteDescription({
                             sdp: answerSdp,
@@ -816,8 +824,11 @@ class Network extends utils_1.EventTarget {
                 return null;
             }
             const response = await connection.sendAndWaitForResponse("get_balance", utils_1.Convert.Base58.decodeBuffer(balanceAddress), "response_balance_" + balanceAddress.slice(0, 8));
-            if (!response || !response.verified) {
+            if (!(response === null || response === void 0 ? void 0 : response.verified)) {
                 return null;
+            }
+            if (!response.body.length) {
+                return false;
             }
             const buffer = response.body;
             let startIndex = 0;

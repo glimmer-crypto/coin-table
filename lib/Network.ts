@@ -40,7 +40,7 @@ abstract class Network extends EventTarget<NetworkEvents> {
     this.wallet = wallet
   }
 
-  abstract requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | null>
+  abstract requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | false | null>
   abstract requestTable(connectionAddress: string, id?: number): Promise<CoinTable | null>
   abstract shareTable(table: CoinTable, exclude?: string): Promise<void>
 
@@ -74,9 +74,11 @@ namespace Network {
       this.connectedAddresses.add(connectionAddress)
     }
 
-    async requestBalance(balanceAddress: string, connectionAddress: string): Promise<CoinTable.SignedBalance | null> {
+    async requestBalance(balanceAddress: string, connectionAddress: string): Promise<CoinTable.SignedBalance | false | null> {
       const connection = this.connections[connectionAddress]
-      return connection.table.balances[balanceAddress] ?? null
+      if (!connection) { return null }
+
+      return connection.table.balances[balanceAddress] ?? false
     }
 
     async requestTable(connectionAddress: string): Promise<CoinTable | null> {
@@ -284,7 +286,7 @@ namespace Network {
     protected abstract internalSend(message: Uint8Array): void
 
     send(header: string, body: Uint8Array, encrypted?: boolean): void {
-      console.log("Sending message", header, encrypted ? "encrypted" : "not encrypted")
+      console.log("Sending message", this.address.slice(0, 8), header, encrypted ? "encrypted" : "not encrypted")
       if (encrypted) {
         body = XorCipher.encrypt(body, this.sharedEncryptionKey)
       }
@@ -333,18 +335,22 @@ namespace Network {
 
     private async handleMessage(data: Message) {
       if (!data.verified) { return }
-      console.log("Recieved message", data.header)
+      console.log("Recieved message", this.address.slice(0, 8), data.header)
 
       if (data.header === "get_balance") {
         const address = Convert.Base58.encode(data.body)
         const balance = this.network.node.table.balances[address]
 
         const responseHeader = "response_balance_" + address.slice(0, 8)
-        this.send(responseHeader, Buffer.concat(
-          Convert.int64ToBuffer(balance.amount),
-          Convert.int64ToBuffer(balance.timestamp),
-          Convert.Base58.decodeBuffer(balance.signature)
-        ))
+        if (balance) {
+          this.send(responseHeader, Buffer.concat(
+            Convert.int64ToBuffer(balance.amount),
+            Convert.int64ToBuffer(balance.timestamp),
+            Convert.Base58.decodeBuffer(balance.signature)
+          ))
+        } else {
+          this.send(responseHeader, new Uint8Array)
+        }
       } else if (data.header === "get_table") {
         const tableBuf = this.network.node.table.exportBuffer()
         this.send("response_table", tableBuf)
@@ -409,7 +415,7 @@ namespace Network {
           sender, senderSignature, senderTransactionSignature, reciever, amount, timestamp
         }
 
-        const response = await this.network.node.handlePendingTransaction(pendingTransaction, this.address) //onRecievingPendingTransaction?.(pendingTransaction, this.address)
+        const response = await this.network.node.handlePendingTransaction(pendingTransaction, this.address)
 
         if (response) {
           const recieverSignature = Convert.Base58.decodeBuffer(response.recieverSignature)
@@ -573,7 +579,7 @@ namespace Network {
           )
   
           const response = await this.sendAndWaitForResponse("rtc_offer_forward", toAndOffer, "rtc_answer_" + connectionAddress.slice(0, 8))
-          if (response && response.body.length) {
+          if (response?.verified && response.body.length) {
             const answerSdp = Convert.bufferToString(XorCipher.decrypt(response.body, sharedKey), true)
             peerConnection.setRemoteDescription({
               sdp: answerSdp,
@@ -961,12 +967,13 @@ namespace Network {
       })
     }
 
-    async requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | null> {
+    async requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | false | null> {
       const connection = id ? this.getConnection(connectionAddress, id) : this.bestConnection(connectionAddress)
       if (!connection) { return null }
 
       const response = await connection.sendAndWaitForResponse("get_balance", Convert.Base58.decodeBuffer(balanceAddress), "response_balance_" + balanceAddress.slice(0, 8))
-      if (!response || !response.verified) { return null }
+      if (!response?.verified) { return null }
+      if (!response.body.length) { return false }
 
       const buffer = response.body
 

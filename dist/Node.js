@@ -41,11 +41,13 @@ class Node extends utils_1.EventTarget {
         var _a;
         const myAddress = this.wallet.public.address;
         const currentBalance = (_a = this.table.balances[myAddress]) !== null && _a !== void 0 ? _a : { timestamp: 0 };
+        console.log("Pending transaction", transaction, from, transaction.reciever === myAddress, transaction.sender === from, transaction.timestamp > currentBalance.timestamp);
         if (transaction.reciever === myAddress && transaction.sender === from && transaction.timestamp > currentBalance.timestamp) {
             return this.addToQueue(async () => {
                 try {
                     const signed = this.wallet.signTransaction(transaction);
                     const confirmed = await this.network.shareTransaction(signed, true, from);
+                    console.log("confirmed", confirmed);
                     if (confirmed) {
                         this.table.applyTransaction(signed);
                         this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
@@ -61,19 +63,21 @@ class Node extends utils_1.EventTarget {
         }
         return false;
     }
-    async verifyTransaction(transaction) {
-        const balances = {
-            sender: this.table.balances[transaction.sender],
-            reciver: this.table.balances[transaction.reciever]
-        };
-        if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
-            (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)) {
-            console.log("Transaction applied previously");
-            return true;
-        }
-        return this.wallet.verifyTransaction(transaction);
+    verifyTransaction(transaction) {
+        return this.addToQueue(() => {
+            const balances = {
+                sender: this.table.balances[transaction.sender],
+                reciver: this.table.balances[transaction.reciever]
+            };
+            if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
+                (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)) {
+                console.log("Transaction applied previously");
+                return true;
+            }
+            return this.wallet.verifyTransaction(transaction);
+        });
     }
-    async handleTransaction(transaction) {
+    handleTransaction(transaction) {
         return this.addToQueue(() => {
             try {
                 this.table.applyTransaction(transaction);
@@ -96,8 +100,8 @@ class Node extends utils_1.EventTarget {
                     else {
                         this.failedTransactions[transaction.reciever].push(transaction);
                     }
+                    console.error(err);
                 }
-                console.error(err);
             }
         });
     }
@@ -181,10 +185,10 @@ class Node extends utils_1.EventTarget {
                         requests[addrIndex] = (async () => {
                             var _a, _b;
                             const response = await this.network.requestBalance(disputedAddress, connectedAddress);
-                            if (!response) {
+                            if (response === null) {
                                 return;
                             }
-                            const amount = response.amount;
+                            const amount = response ? response.amount : undefined;
                             if (amount === ((_a = oldTable.balances[disputedAddress]) === null || _a === void 0 ? void 0 : _a.amount)) {
                                 votes.old += votingPower;
                             }
