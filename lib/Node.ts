@@ -74,34 +74,25 @@ export default class Node extends EventTarget<NodeEvents> {
     return false
   }
 
-  async handleTransaction(transaction: CoinTable.SignedTransaction): Promise<boolean> {
+  async verifyTransaction(transaction: CoinTable.SignedTransaction): Promise<boolean> {
+    const balances = {
+      sender: this.table.balances[transaction.sender],
+      reciver: this.table.balances[transaction.reciever]
+    }
+
+    if (
+      (balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
+      (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)
+    ) {
+      console.log("Transaction applied previously")
+      return true
+    }
+
+    return this.wallet.verifyTransaction(transaction)
+  }
+
+  async handleTransaction(transaction: CoinTable.SignedTransaction): Promise<void> {
     return this.addToQueue(() => {
-      const balances = {
-        sender: this.table.balances[transaction.sender],
-        reciver: this.table.balances[transaction.reciever]
-      }
-      if (
-        balances.sender && transaction.timestamp < balances.sender.timestamp ||
-        balances.reciver && transaction.timestamp < balances.reciver.timestamp
-      ) { return false }
-
-      if (
-        (balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature !== balances.sender.signature) ||
-        (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature !== balances.sender.signature)
-      ) { // Something wierd is happening, attempt to sync with the network
-        console.log("Attempting sync")
-        this.network.shareTable(this.table)
-        return false
-      }
-
-      if (
-        (balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
-        (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)
-      ) {
-        console.log("Transaction applied previously")
-        return true
-      }
-
       try {
         this.table.applyTransaction(transaction)
         this.network.shareTransaction(transaction)
@@ -110,7 +101,6 @@ export default class Node extends EventTarget<NodeEvents> {
 
         this.dispatchEvent("transactioncompleted", deepClone(transaction))
         console.log("Transaction completed successfully")
-        return true
       } catch (err) {
         if (!err.message.includes("Transaction timestamp is invalid")) {
           if (!this.failedTransactions[transaction.sender]) {
@@ -128,8 +118,6 @@ export default class Node extends EventTarget<NodeEvents> {
 
         console.error(err)
       }
-
-      return false
     })
   }
 
@@ -292,7 +280,7 @@ export default class Node extends EventTarget<NodeEvents> {
 
       if (signed) {
         try {
-          const valid = this.wallet.verifyTansaction(signed)
+          const valid = this.wallet.verifyTransaction(signed)
           if (!valid) { return false }
 
           const confirmed = await this.network.shareTransaction(signed, true)
@@ -306,7 +294,7 @@ export default class Node extends EventTarget<NodeEvents> {
           console.error(err)
         }
       } else {
-        return signed
+        return signed as false | null
       }
 
       return false

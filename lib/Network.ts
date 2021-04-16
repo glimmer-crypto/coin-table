@@ -193,18 +193,15 @@ namespace Network {
     protected internalOpenHandler() {
       if (this.state !== "connecting") { return } // Only run if state is currently in "connecting"
 
-      const connections = this.network["connections"]
-
+      // const connections = this.network["connections"]
       const connectionBuffers: Uint8Array[] = []
-      this.network.connectedAddresses.forEach(addr => {
-        connections[addr].forEach(connection => {
-          if (connection.state !== "open") { return }
+      this.network.allConnections.forEach(connection => {
+        if (connection === this || connection.state !== "open") { return }
 
-          connectionBuffers.push(Buffer.concat(
-            Convert.Base58.decodeBuffer(addr, Key.Public.LENGTH),
-            Convert.int32ToBuffer(connection.uniqueId)
-          ))
-        })
+        connectionBuffers.push(Buffer.concat(
+          Convert.Base58.decodeBuffer(connection.address, Key.Public.LENGTH),
+          Convert.int32ToBuffer(connection.uniqueId)
+        ))
       })
       this.send("connections", Buffer.concat(...connectionBuffers))
 
@@ -225,26 +222,24 @@ namespace Network {
         )
       }
 
-      Object.keys(connections).forEach(addr => {
-        if (addr === this.address) { return }
+      this.network.allConnections.forEach(connection => {
+        if (connection.address === this.address) { return }
 
-        connections[addr].forEach(connection => {
-          if (serverData) {
-            connection.send("server_connected", serverData)
-          } else {
-            connection.send("new_connection", connectionInfoBuffer)
-          }
+        if (serverData) {
+          connection.send("server_connected", serverData)
+        } else {
+          connection.send("new_connection", connectionInfoBuffer)
+        }
 
-          if (connection instanceof WebSocketConnection && connection.serverHost) {
-            const serverData = Buffer.concat(
-              Convert.Base58.decodeBuffer(connection.address, Key.Public.LENGTH), 
-              Convert.int32ToBuffer(connection.uniqueId),
-              Convert.stringToBuffer(connection.serverHost)
-            )
+        if (connection instanceof WebSocketConnection && connection.serverHost) {
+          const serverData = Buffer.concat(
+            Convert.Base58.decodeBuffer(connection.address, Key.Public.LENGTH), 
+            Convert.int32ToBuffer(connection.uniqueId),
+            Convert.stringToBuffer(connection.serverHost)
+          )
 
-            this.send("server_connected", serverData)
-          }
-        })
+          this.send("server_connected", serverData)
+        }
       })
 
       let connectionCount = connectionBuffers.length
@@ -280,17 +275,16 @@ namespace Network {
       this.dispatchEvent("close")
       this.network.dispatchEvent("disconnection", { address: this.address })
 
-      if (this.network instanceof Client) {
-        this.network.shareWithAll("connection_closed", Buffer.concat(
-          Convert.Base58.decodeBuffer(this.address, Key.Public.LENGTH),
-          Convert.int32ToBuffer(this.uniqueId)
-        ))
-      }
+      this.network.shareWithAll("connection_closed", Buffer.concat(
+        Convert.Base58.decodeBuffer(this.address, Key.Public.LENGTH),
+        Convert.int32ToBuffer(this.uniqueId)
+      ))
     }
 
     protected abstract internalSend(message: Uint8Array): void
 
     send(header: string, body: Uint8Array, encrypted?: boolean): void {
+      console.log("Sending message", header, encrypted ? "encrypted" : "not encrypted")
       if (encrypted) {
         body = XorCipher.encrypt(body, this.sharedEncryptionKey)
       }
@@ -338,6 +332,9 @@ namespace Network {
     }
 
     private async handleMessage(data: Message) {
+      if (!data.verified) { return }
+      console.log("Recieved message", data.header)
+
       if (data.header === "get_balance") {
         const address = Convert.Base58.encode(data.body)
         const balance = this.network.node.table.balances[address]
@@ -375,10 +372,24 @@ namespace Network {
         }
 
         if (startIndex < data.body.length && data.body[data.body.length - 1]) { // Requested a response
-          const response = await this.network.node.handleTransaction(transaction)
-          const responseBuffer = new Uint8Array(response ? [1] : [])
-          const responseHeader = "transaction_result_" + senderSignature.slice(0, 16)
-          this.send(responseHeader, responseBuffer)
+          const valid = this.network.node.verifyTransaction(transaction)
+
+          const txId = senderSignature.slice(0, 16)
+          const responseHeader = "transaction_result_" + txId
+
+          console.log("Recieved a pending transaction", txId, valid)
+          if (valid) {
+            const confirmed = await this.sendAndWaitForResponse(responseHeader, new Uint8Array([1]), "transaction_confirmed_" + txId)
+            console.log("Confirmation response", confirmed)
+            if (confirmed?.verified && confirmed.body[0]) {
+              console.log("Transaction confirmed", txId)
+              this.network.node.handleTransaction(transaction)
+            } else {
+              console.log("Transaction cancelled", txId)
+            }
+          } else {
+            this.send(responseHeader, new Uint8Array())
+          }
         } else {
           this.network.node.handleTransaction(transaction)
         }
@@ -406,7 +417,7 @@ namespace Network {
         } else {
           this.send("pending_transaction_signature", new Uint8Array())
         }
-      } else if (data.header === "server_connected" && this.network instanceof Client) {
+      } else if (data.header === "server_connected") {
         const connectionAddress = Convert.Base58.encode(data.body.subarray(0, Key.Public.LENGTH))
         const uniqueId = Convert.bufferToInt(data.body.subarray(Key.Public.LENGTH, Key.Public.LENGTH + 4))
 
@@ -427,8 +438,7 @@ namespace Network {
 
           this.insertNeighbor(connectionAddress, uniqueId)
         }
-
-      } else if (data.header === "new_connection" && this.network instanceof Client && !(this.network instanceof Server)) {
+      } else if (data.header === "new_connection" && inBrowser) {
         const connectionAddress = Convert.Base58.encode(data.body.subarray(0, Key.Public.LENGTH))
         const uniqueId = Convert.bufferToInt(data.body.subarray(Key.Public.LENGTH))
         this.insertNeighbor(connectionAddress, uniqueId)
@@ -442,12 +452,12 @@ namespace Network {
             this.signalForWebRTCConnection(connectionAddress, uniqueId)
           }
         }
-      } else if (data.header === "connection_closed" && this.network instanceof Client) {
+      } else if (data.header === "connection_closed") {
         const connectionAddress = Convert.Base58.encode(data.body.subarray(0, Key.Public.LENGTH))
         const uniqueId = Convert.bufferToInt(data.body.subarray(Key.Public.LENGTH))
 
         this.deleteNeighbor(connectionAddress, uniqueId)
-      } else if (data.header === "rtc_offer_forward" && this.network instanceof Server) {
+      } else if (data.header === "rtc_offer_forward") {
         let startIndex = 0
         const connectionAddress = Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key.Public.LENGTH))
         const uniqueId = Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4))
@@ -466,14 +476,14 @@ namespace Network {
         } else {
           this.send("rtc_answer_" + connectionAddress.slice(0, 8), new Uint8Array([]))
         }
-      } else if (data.header === "rtc_offer" && this instanceof WebSocketConnection && !(this.network instanceof Server)) {
+      } else if (data.header === "rtc_offer" && inBrowser) {
         let startIndex = 0
         const connectionAddress = Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key.Public.LENGTH))
         const uniqueId = Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 4))
 
         const connection = this.network.getConnection(connectionAddress, uniqueId)
+        console.log("RTC Offer", connectionAddress.slice(0, 8), uniqueId)
         if (!connection || connection.state === "closed") {
-
           const peerConnection = new RTCPeerConnection({
             iceServers: [{ urls: "stun:stun2.l.google.com:19302" }]
           })
@@ -1001,61 +1011,62 @@ namespace Network {
         Convert.Base58.decodeBuffer(transaction.reciever, Key.Public.LENGTH),
         Convert.Base58.decodeBuffer(transaction.recieverSignature, Key.SIG_LENGTH),
         Convert.int64ToBuffer(transaction.amount),
-        Convert.int64ToBuffer(transaction.timestamp)
+        Convert.int64ToBuffer(transaction.timestamp),
+        confirm ? [1] : []
       )
 
       if (confirm) {
-        const confirmTransactionBuffer = Buffer.concat(
-          transactionBuffer, [1]
-        )
-
-        const responseHeader = "transaction_result_" + transaction.senderSignature.slice(0, 16)
+        const txId = transaction.senderSignature.slice(0, 16)
+        const responseHeader = "transaction_result_" + txId
         const pendingResponses: Promise<void>[] = []
 
         let totalVotes = 0
         let confirmVotes = 0
 
+        const responsesRequired: Connection[] = []
+
         this.connectedAddresses.forEach(address => {
           if (address === exclude) { return }
 
-          const bestConnection = this.bestConnection(address)
-          if (!bestConnection) { return }
+          const connection = this.bestConnection(address)
+          if (!connection) { return }
 
           const balance = this.node.table.balances[address]
-          if (!balance || !balance.amount) {
-            bestConnection.send("new_transaction", transactionBuffer)
-            return
-          }
+          if (!balance?.amount) { return }
 
           const votingPower = Math.sqrt(balance.amount)
 
           pendingResponses.push(
-            bestConnection.sendAndWaitForResponse("new_transaction", confirmTransactionBuffer, responseHeader)
+            connection.sendAndWaitForResponse("new_transaction", transactionBuffer, responseHeader)
             .then(response => {
               if (!response?.verified) { return }
+
+              console.log("Transaction result", address.slice(0, 8), txId, !!response?.body[0])
 
               totalVotes += votingPower
               if (response.body[0]) {
                 confirmVotes += votingPower
+                responsesRequired.push(connection)
               }
             })
           )
-
-          const allConnections = this.connections[address]
-          if (allConnections.size <= 1) { return }
-  
-          allConnections.forEach(connection => {
-            if (connection === bestConnection || connection === exclude) { return }
-            if (!connection || connection.state !== "open") { return }
-            
-            connection.send("new_transaction", transactionBuffer)
-          })
         })
         await Promise.all(pendingResponses)
 
+        console.log("Transaction results", {
+          totalVotes, confirmVotes
+        }, confirmVotes >= 0.75 * totalVotes)
         if (confirmVotes >= 0.75 * totalVotes) {
+          responsesRequired.forEach(conn => {
+            conn.send("transaction_confirmed_" + txId, new Uint8Array([1]))
+          })
+
           return true
         } else {
+          responsesRequired.forEach(conn => {
+            conn.send("transaction_confirmed_" + txId, new Uint8Array())
+          })
+
           return false
         }
       } else {

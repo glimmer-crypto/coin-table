@@ -101,7 +101,7 @@ class Wallet {
         transaction.recieverSignature = this.signBalance(newBalance).signature;
         return transaction;
     }
-    verifyTansaction(transaction) {
+    verifyTransaction(transaction) {
         if (!this.node.table) {
             throw new Error("Missing current table");
         }

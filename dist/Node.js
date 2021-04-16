@@ -61,34 +61,26 @@ class Node extends utils_1.EventTarget {
         }
         return false;
     }
+    async verifyTransaction(transaction) {
+        const balances = {
+            sender: this.table.balances[transaction.sender],
+            reciver: this.table.balances[transaction.reciever]
+        };
+        if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
+            (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)) {
+            console.log("Transaction applied previously");
+            return true;
+        }
+        return this.wallet.verifyTransaction(transaction);
+    }
     async handleTransaction(transaction) {
         return this.addToQueue(() => {
-            const balances = {
-                sender: this.table.balances[transaction.sender],
-                reciver: this.table.balances[transaction.reciever]
-            };
-            if (balances.sender && transaction.timestamp < balances.sender.timestamp ||
-                balances.reciver && transaction.timestamp < balances.reciver.timestamp) {
-                return false;
-            }
-            if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature !== balances.sender.signature) ||
-                (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature !== balances.sender.signature)) { // Something wierd is happening, attempt to sync with the network
-                console.log("Attempting sync");
-                this.network.shareTable(this.table);
-                return false;
-            }
-            if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
-                (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)) {
-                console.log("Transaction applied previously");
-                return true;
-            }
             try {
                 this.table.applyTransaction(transaction);
                 this.network.shareTransaction(transaction);
                 this.retryFailedTransactions(transaction);
                 this.dispatchEvent("transactioncompleted", utils_1.deepClone(transaction));
                 console.log("Transaction completed successfully");
-                return true;
             }
             catch (err) {
                 if (!err.message.includes("Transaction timestamp is invalid")) {
@@ -107,7 +99,6 @@ class Node extends utils_1.EventTarget {
                 }
                 console.error(err);
             }
-            return false;
         });
     }
     /**
@@ -256,7 +247,7 @@ class Node extends utils_1.EventTarget {
             const signed = await this.network.sendPendingTransaction(transaction);
             if (signed) {
                 try {
-                    const valid = this.wallet.verifyTansaction(signed);
+                    const valid = this.wallet.verifyTransaction(signed);
                     if (!valid) {
                         return false;
                     }

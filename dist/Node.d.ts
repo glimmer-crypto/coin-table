@@ -13,7 +13,8 @@ export default class Node extends EventTarget<NodeEvents> {
     constructor(wallet: Wallet, network: Network, initalTable?: CoinTable);
     private initNetwork;
     handlePendingTransaction(transaction: CoinTable.PendingTransaction, from: string): Promise<false | CoinTable.SignedTransaction>;
-    handleTransaction(transaction: CoinTable.SignedTransaction): Promise<boolean>;
+    verifyTransaction(transaction: CoinTable.SignedTransaction): Promise<boolean>;
+    handleTransaction(transaction: CoinTable.SignedTransaction): Promise<void>;
     /**
      * @returns A `CoinTable` if there is a new table and `null` if not
      */

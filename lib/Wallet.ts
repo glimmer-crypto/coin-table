@@ -124,7 +124,7 @@ class Wallet {
     return transaction as CoinTable.SignedTransaction
   }
 
-  verifyTansaction(transaction: CoinTable.SignedTransaction): boolean {
+  verifyTransaction(transaction: CoinTable.SignedTransaction): boolean {
     if (!this.node.table) { throw new Error("Missing current table") }
     if (transaction.amount % 1 !== 0) { return false }
 
