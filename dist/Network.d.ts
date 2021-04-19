@@ -39,7 +39,7 @@ declare namespace Network {
     export class Local extends Network {
         private connections;
         connect(node: Node): void;
-        requestBalance(balanceAddress: string, connectionAddress: string): Promise<CoinTable.SignedBalance | null>;
+        requestBalance(balanceAddress: string, connectionAddress: string): Promise<CoinTable.SignedBalance | false | null>;
         requestTable(connectionAddress: string): Promise<CoinTable | null>;
         shareTable(table: CoinTable, excluding: string): Promise<void>;
         shareTransaction(transaction: CoinTable.SignedTransaction, confirm?: false, exclude?: string): Promise<void>;

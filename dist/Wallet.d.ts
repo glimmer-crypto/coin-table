@@ -26,7 +26,13 @@ declare class Wallet {
     exportJSON(password?: string, iterations?: number): Wallet.JSONObject;
     exportJSON(password: string, iterations: number | undefined | null, progressObj: {
         progress?: number;
+        stop?: boolean;
     }): Promise<Wallet.JSONObject | null>;
+    static fromSeedPhrase(seed: string, password?: string): Wallet;
+    static fromSeedPhrase(seed: string, password: string, progressObj: {
+        progress?: number;
+        stop?: boolean;
+    }): Promise<Wallet | null>;
 }
 declare namespace Wallet {
     type JSONObject = {
@@ -35,5 +41,16 @@ declare namespace Wallet {
         salt?: string;
         iterations?: number;
     };
+    class WordList {
+        readonly wordlist: string[];
+        private readonly count;
+        private readonly bncount;
+        private readonly minLength;
+        private readonly maxLength;
+        private readonly alphabet;
+        constructor(wordlist: string[]);
+        generateSeedPhrase(): string;
+        normalizeSeedPhrase(seed: string): string | null;
+    }
 }
 export default Wallet;

@@ -51,7 +51,7 @@ function kdf(input: string, iterations: number) {
     }
 
     expanded.set(hashResult, setIndex)
-    digestLength += 64
+    if (digestLength < MB) { digestLength += 64 }
   }
 
   digestIndex = digestIndex % (digestLength - 64)
@@ -91,7 +91,7 @@ function kdfWithProgress(input: string, iterations: number, progressObj: { progr
         }
 
         expanded.set(hashResult, setIndex)
-        digestLength += 64
+        if (digestLength < MB) { digestLength += 64 }
 
         i++
         if (i >= iterations) { break }
@@ -167,7 +167,6 @@ export namespace Key {
       }
 
       sig = Buffer.unpad(sig)
-      // console.log(Convert.bufferToHex(Buffer.concat([0x30], sig)))
   
       return this.keyPair.verify(digest, Buffer.concat([0x30], sig))
     }

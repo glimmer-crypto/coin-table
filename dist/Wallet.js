@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const utils_1 = require("./utils");
 const Key_1 = require("./Key");
+const elliptic_1 = require("elliptic");
 class Wallet {
     constructor(privateKey, publicAddress) {
         if (typeof privateKey === "string") {
@@ -228,7 +229,68 @@ class Wallet {
             privateKey: this.private.toString()
         };
     }
+    static fromSeedPhrase(seed, password = "", progressObj) {
+        const json = {
+            privateKey: "11111111111111111111111111111111111111111111",
+            salt: "seed",
+            iterations: 100000
+        };
+        const fullSeed = seed + ":" + password;
+        if (progressObj) {
+            return Wallet.importJSON(json, fullSeed, progressObj);
+        }
+        else {
+            return Wallet.importJSON(json, fullSeed);
+        }
+    }
 }
 const defaultPasswordHashIterations = 15000;
+(function (Wallet) {
+    class WordList {
+        constructor(wordlist) {
+            this.alphabet = new Set();
+            this.wordlist = wordlist;
+            this.count = wordlist.length;
+            this.bncount = new utils_1.BN(wordlist.length);
+            let minLength = Infinity;
+            let maxLength = 0;
+            wordlist.forEach(word => {
+                if (word.length < minLength) {
+                    minLength = word.length;
+                }
+                if (word.length > maxLength) {
+                    maxLength = word.length;
+                }
+                word.split("").forEach(char => this.alphabet.add(char));
+            });
+            this.minLength = minLength;
+            this.maxLength = maxLength;
+        }
+        generateSeedPhrase() {
+            const randomBytes = elliptic_1.rand(17);
+            const bigNum = new utils_1.BN(randomBytes);
+            const words = [];
+            for (let i = 0; i < 12; i++) {
+                const wordIndex = bigNum.mod(this.bncount).toNumber();
+                words.push(this.wordlist[wordIndex]);
+                bigNum.idivn(this.count);
+            }
+            return words.join(" ");
+        }
+        normalizeSeedPhrase(seed) {
+            const normalizeSpaces = seed.trim().replace(/\s+/g, " ");
+            const words = normalizeSpaces.split(" ");
+            if (words.length !== 12 || words.some(word => word.length < this.minLength || word.length > this.maxLength)) {
+                return null;
+            }
+            const normalizeCase = normalizeSpaces.toLowerCase();
+            if (!normalizeCase.split("").every(char => char === " " || this.alphabet.has(char))) {
+                return null;
+            }
+            return normalizeCase;
+        }
+    }
+    Wallet.WordList = WordList;
+})(Wallet || (Wallet = {}));
 exports.default = Wallet;
 //# sourceMappingURL=Wallet.js.map

@@ -1,7 +1,8 @@
 import type CoinTable from "./CoinTable"
 import type Node from "./Node"
-import { Convert, deepClone, Buffer } from "./utils"
+import { Convert, deepClone, Buffer, BN } from "./utils"
 import Key from "./Key"
+import { rand } from "elliptic"
 
 class Wallet {
   readonly public: Key.Public
@@ -218,8 +219,8 @@ class Wallet {
   }
 
   exportJSON(password?: string, iterations?: number): Wallet.JSONObject
-  exportJSON(password: string, iterations: number | undefined | null, progressObj: { progress?: number }): Promise<Wallet.JSONObject | null>
-  exportJSON(password?: string, iterations?: number, progressObj?: { progress?: number }): Wallet.JSONObject | Promise<Wallet.JSONObject | null>  {
+  exportJSON(password: string, iterations: number | undefined | null, progressObj: { progress?: number, stop?: boolean }): Promise<Wallet.JSONObject | null>
+  exportJSON(password?: string, iterations?: number, progressObj?: { progress?: number, stop?: boolean }): Wallet.JSONObject | Promise<Wallet.JSONObject | null>  {
     const hashIterations = iterations ?? defaultPasswordHashIterations
 
     if (password) {
@@ -259,6 +260,23 @@ class Wallet {
       privateKey: this.private.toString()
     }
   }
+
+  static fromSeedPhrase(seed: string, password?: string): Wallet
+  static fromSeedPhrase(seed: string, password: string, progressObj: { progress?: number, stop?: boolean }): Promise<Wallet | null>
+  static fromSeedPhrase(seed: string, password = "", progressObj?: { progress?: number, stop?: boolean }): Wallet | Promise<Wallet | null> {
+    const json: Wallet.JSONObject = {
+      privateKey: "11111111111111111111111111111111111111111111",
+      salt: "seed",
+      iterations: 100_000
+    }
+
+    const fullSeed = seed + ":" + password
+    if (progressObj) {
+      return Wallet.importJSON(json, fullSeed, progressObj)
+    } else {
+      return Wallet.importJSON(json, fullSeed)
+    }
+  }
 }
 
 const defaultPasswordHashIterations = 15_000
@@ -269,6 +287,72 @@ namespace Wallet {
     privateKey: string,
     salt?: string,
     iterations?: number
+  }
+
+  export class WordList {
+    readonly wordlist: string[]
+
+    private readonly count: number
+    private readonly bncount: BN
+
+    private readonly minLength: number
+    private readonly maxLength: number
+
+    private readonly alphabet = new Set<string>()
+
+    constructor(wordlist: string[]) {
+      this.wordlist = wordlist
+      this.count = wordlist.length
+      this.bncount = new BN(wordlist.length)
+
+      let minLength = Infinity
+      let maxLength = 0
+
+      wordlist.forEach(word => {
+        if (word.length < minLength) {
+          minLength = word.length
+        }
+        if (word.length > maxLength) {
+          maxLength = word.length
+        }
+
+        word.split("").forEach(char => this.alphabet.add(char))
+      })
+
+      this.minLength = minLength
+      this.maxLength = maxLength
+    }
+
+    generateSeedPhrase(): string {
+      const randomBytes = rand(17)
+  
+      const bigNum = new BN(randomBytes)
+      const words = []
+      for (let i = 0; i < 12; i++) {
+        const wordIndex = bigNum.mod(this.bncount).toNumber()
+        words.push(this.wordlist[wordIndex])
+
+        bigNum.idivn(this.count)
+      }
+
+      return words.join(" ")
+    }
+
+    normalizeSeedPhrase(seed: string): string | null {
+      const normalizeSpaces = seed.trim().replace(/\s+/g, " ")
+
+      const words = normalizeSpaces.split(" ")
+      if (words.length !== 12 || words.some(word => word.length < this.minLength || word.length > this.maxLength)) {
+        return null
+      }
+
+      const normalizeCase = normalizeSpaces.toLowerCase()
+      if (!normalizeCase.split("").every(char => char === " " || this.alphabet.has(char))) {
+        return null
+      }
+      
+      return normalizeCase
+    }
   }
 }
 
