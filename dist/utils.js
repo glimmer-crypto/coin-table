@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Buffer = exports.Convert = exports.EventTarget = exports.shuffle = exports.deepClone = exports.XorCipher = exports.hash = exports.BN = void 0;
+exports.Buffer = exports.Convert = exports.EventTarget = exports.SortedList = exports.Random = exports.shuffle = exports.deepClone = exports.XorCipher = exports.hash = exports.BN = void 0;
 const BigNum = require("bn.js");
 const hash_js_1 = require("hash.js");
+const elliptic_1 = require("elliptic");
 exports.BN = BigNum;
 function hash(message) {
     return hash_js_1.sha512().update(message).digest();
@@ -90,6 +91,134 @@ function shuffle(array) {
     return array;
 }
 exports.shuffle = shuffle;
+exports.Random = {
+    mulberry32(seed) {
+        return function () {
+            let t = seed += 0x6D2B79F5;
+            t = Math.imul(t ^ t >>> 15, t | 1);
+            t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+            return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        };
+    },
+    crypto: elliptic_1.rand
+};
+class SortedList {
+    constructor(uniqueOrInitialList = false, unique = false) {
+        this.list = [];
+        if (typeof uniqueOrInitialList === "boolean") {
+            this.unique = uniqueOrInitialList;
+        }
+        else {
+            const list = uniqueOrInitialList.slice().sort((a, b) => {
+                if (a < b) {
+                    return -1;
+                }
+                else if (a > b) {
+                    return 1;
+                }
+                else {
+                    return 0;
+                }
+            });
+            this.list = list;
+            this.unique = unique;
+            if (unique) {
+                let index = 0;
+                const length = list.length;
+                for (let i = 0; i < length; i++) {
+                    if (list[index] === list[index - 1]) {
+                        list.splice(index, 1);
+                    }
+                    else {
+                        index += 1;
+                    }
+                }
+            }
+        }
+    }
+    get length() {
+        return this.list.length;
+    }
+    [Symbol.iterator]() {
+        return this.list[Symbol.iterator]();
+    }
+    indexOf(value) {
+        const list = this.list;
+        let lower = 0;
+        let upper = list.length - 1;
+        let index = 0;
+        while (lower <= upper) {
+            index = Math.floor((upper + lower) / 2);
+            const item = list[index];
+            if (value > item) {
+                lower = index + 1;
+            }
+            else if (value < item) {
+                upper = index - 1;
+            }
+            else {
+                return index;
+            }
+        }
+        return -1;
+    }
+    indexOfNearby(value) {
+        const list = this.list;
+        let lower = 0;
+        let upper = list.length - 1;
+        let index = -1;
+        while (lower <= upper) {
+            index = Math.floor((upper + lower) / 2);
+            const item = list[index];
+            if (value > item) {
+                lower = index + 1;
+            }
+            else if (value < item) {
+                upper = index - 1;
+            }
+            else {
+                return index;
+            }
+        }
+        return index;
+    }
+    insert(newValue) {
+        const list = this.list;
+        let lower = 0;
+        let upper = list.length - 1;
+        let index = 0;
+        while (lower <= upper) {
+            index = Math.floor((upper + lower) / 2);
+            const item = list[index];
+            if (newValue > item) {
+                lower = index + 1;
+                index += 1;
+            }
+            else if (newValue < item) {
+                upper = index - 1;
+            }
+            else {
+                if (!this.unique) {
+                    list.splice(index, 0, newValue);
+                    return true;
+                }
+                return false;
+            }
+        }
+        list.splice(index, 0, newValue);
+        return true;
+    }
+    static fromAlreadySorted(list, unique = false) {
+        const newList = new SortedList(unique);
+        const mutable = newList;
+        mutable.list = list.slice();
+        return newList;
+    }
+    clone() {
+        return SortedList.fromAlreadySorted(this.list, this.unique);
+    }
+}
+exports.SortedList = SortedList;
 // eslint-disable-next-line @typescript-eslint/ban-types
 class EventTarget {
     constructor() {

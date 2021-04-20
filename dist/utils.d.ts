@@ -8,6 +8,23 @@ export declare namespace XorCipher {
 }
 export declare function deepClone<T extends Record<string, any> | undefined | null>(object: T, newObject?: Record<string, any>): T;
 export declare function shuffle<T>(array: Array<T>): Array<T>;
+export declare const Random: {
+    mulberry32(seed: number): () => number;
+    crypto: (bytes: number) => Uint8Array;
+};
+export declare class SortedList<Item extends string | number> implements Iterable<Item> {
+    readonly unique: boolean;
+    readonly list: Item[];
+    get length(): number;
+    constructor(unique?: boolean);
+    constructor(initialList: Item[], unique?: boolean);
+    [Symbol.iterator](): Iterator<Item, unknown, undefined>;
+    indexOf(value: Item): number;
+    indexOfNearby(value: Item): number;
+    insert(newValue: Item): boolean;
+    static fromAlreadySorted<Item extends string | number>(list: Item[], unique?: boolean): SortedList<Item>;
+    clone(): SortedList<Item>;
+}
 export declare class EventTarget<EventTypes extends object> {
     private readonly listeners;
     on<EventName extends keyof EventTypes>(eventName: EventName, listener: (this: this, value: EventTypes[EventName]) => void): void;

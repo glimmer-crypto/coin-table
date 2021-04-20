@@ -10,6 +10,7 @@ declare class Wallet {
     static verifyBalance(balance: CoinTable.SignedBalance, publicKey: Key.Public | string): boolean;
     createTransaction(amount: number, reciever: Key.Public | string): CoinTable.PendingTransaction;
     signTransaction(transaction: CoinTable.PendingTransaction): CoinTable.SignedTransaction;
+    static verifyConfirmationTransaction(transaction: CoinTable.ConfirmationTransaction): boolean;
     verifyTransaction(transaction: CoinTable.SignedTransaction): boolean;
     signMessage(buf: Uint8Array): Uint8Array;
     static verifyMessage(buf: Uint8Array, from: Key.Public | string): {

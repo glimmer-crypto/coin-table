@@ -47,7 +47,7 @@ CoinTable.initialize(
   }
 )
 
-const wallet = new Wallet("****", "2jmBMjcxTVvpZ5m23iN3NwAFvSPCFiQSr9jnPZZrKPV5Ur")
+const wallet = new Wallet("**", "2jmBMjcxTVvpZ5m23iN3NwAFvSPCFiQSr9jnPZZrKPV5Ur")
 const client = new Network.Client(wallet)
 const node = new Node(wallet, client)
 

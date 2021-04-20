@@ -6,15 +6,21 @@ declare type NodeEvents = {
     "transactioncompleted": CoinTable.SignedTransaction;
     "newtable": CoinTable;
 };
-export default class Node extends EventTarget<NodeEvents> {
+interface NetworkDelegate {
+    signPendingTransaction(transaction: CoinTable.PendingTransaction, from: string): Promise<false | CoinTable.SignedTransaction>;
+    processTransaction(transaction: CoinTable.SignedTransaction): Promise<void>;
+    confirmPendingTransaction(transaction: Omit<CoinTable.PendingTransaction, "senderSignature">, castVote: ((vote: true) => Promise<boolean>) & ((vote: false) => void)): void;
+}
+export default class Node extends EventTarget<NodeEvents> implements NetworkDelegate {
     readonly wallet: Wallet;
     readonly network: Network;
     table: CoinTable;
     constructor(wallet: Wallet, network: Network, initalTable?: CoinTable);
     private initNetwork;
-    handlePendingTransaction(transaction: CoinTable.PendingTransaction, from: string): Promise<false | CoinTable.SignedTransaction>;
-    verifyTransaction(transaction: CoinTable.SignedTransaction): Promise<boolean>;
-    handleTransaction(transaction: CoinTable.SignedTransaction): Promise<void>;
+    signPendingTransaction(transaction: CoinTable.PendingTransaction, from: string): Promise<false | CoinTable.SignedTransaction>;
+    pendingTransactions: Set<string>;
+    confirmPendingTransaction(transaction: CoinTable.ConfirmationTransaction, castVote: (vote: boolean) => Promise<boolean>): Promise<void>;
+    processTransaction(transaction: CoinTable.SignedTransaction): Promise<void>;
     /**
      * @returns A `CoinTable` if there is a new table and `null` if not
      */
@@ -25,5 +31,6 @@ export default class Node extends EventTarget<NodeEvents> {
     getTable(): Promise<CoinTable | null>;
     private queue;
     private addToQueue;
+    votingPower(address: string): number;
 }
 export {};

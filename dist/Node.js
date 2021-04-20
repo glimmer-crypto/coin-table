@@ -1,10 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+const Wallet_1 = require("./Wallet");
 const CoinTable_1 = require("./CoinTable");
 const utils_1 = require("./utils");
 class Node extends utils_1.EventTarget {
     constructor(wallet, network, initalTable) {
         super();
+        this.pendingTransactions = new Set();
         this.failedTransactions = {};
         this.queue = [];
         this.wallet = wallet;
@@ -37,20 +39,20 @@ class Node extends utils_1.EventTarget {
         });
     }
     // Network delegate methods
-    async handlePendingTransaction(transaction, from) {
+    async signPendingTransaction(transaction, from) {
         var _a;
         const myAddress = this.wallet.public.address;
         const currentBalance = (_a = this.table.balances[myAddress]) !== null && _a !== void 0 ? _a : { timestamp: 0 };
-        console.log("Pending transaction", transaction, from, transaction.reciever === myAddress, transaction.sender === from, transaction.timestamp > currentBalance.timestamp);
         if (transaction.reciever === myAddress && transaction.sender === from && transaction.timestamp > currentBalance.timestamp) {
             return this.addToQueue(async () => {
                 try {
                     const signed = this.wallet.signTransaction(transaction);
-                    const confirmed = await this.network.shareTransaction(signed, true, from);
-                    console.log("confirmed", confirmed);
+                    const confirmed = await this.network.confirmTransaction(signed);
+                    // console.log("confirmed", confirmed)
                     if (confirmed) {
                         this.table.applyTransaction(signed);
                         this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
+                        this.network.shareTransaction(signed);
                         return signed;
                     }
                 }
@@ -63,21 +65,22 @@ class Node extends utils_1.EventTarget {
         }
         return false;
     }
-    verifyTransaction(transaction) {
-        return this.addToQueue(() => {
-            const balances = {
-                sender: this.table.balances[transaction.sender],
-                reciver: this.table.balances[transaction.reciever]
-            };
-            if ((balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
-                (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)) {
-                console.log("Transaction applied previously");
-                return true;
-            }
-            return this.wallet.verifyTransaction(transaction);
-        });
+    async confirmPendingTransaction(transaction, castVote) {
+        if (!Wallet_1.default.verifyConfirmationTransaction(transaction)) {
+            castVote(false);
+            return;
+        }
+        const pendingTransactions = this.pendingTransactions;
+        if (pendingTransactions.has(transaction.sender)) {
+            castVote(false);
+        }
+        else {
+            pendingTransactions.add(transaction.sender);
+            await castVote(true);
+            pendingTransactions.delete(transaction.sender);
+        }
     }
-    handleTransaction(transaction) {
+    processTransaction(transaction) {
         return this.addToQueue(() => {
             try {
                 this.table.applyTransaction(transaction);
@@ -112,13 +115,13 @@ class Node extends utils_1.EventTarget {
         var _a, _b;
         const oldBalances = oldTable.balances;
         const mergedBalances = utils_1.deepClone(oldBalances);
-        const allAdresses = new Set(oldTable.walletAddresses);
+        const allAdresses = new Set(oldTable.addresses);
         const disputedAdresses = new Set();
         if (!newTable.isValid) {
             return null;
         }
         const missingAdresses = new Set(allAdresses);
-        newTable.walletAddresses.forEach(walletAddress => {
+        newTable.addresses.list.forEach(walletAddress => {
             const balance = newTable.balances[walletAddress];
             const currentBalance = mergedBalances[walletAddress];
             if (!currentBalance) {
@@ -156,26 +159,22 @@ class Node extends utils_1.EventTarget {
             total: 0
         };
         const connectedAdresses = utils_1.shuffle(Array.from(this.network.connectedAddresses));
-        const requiredVoters = Math.max(25, Math.floor(Math.sqrt(connectedAdresses.length)));
+        const requiredVoters = 100;
         let totalVoters = 0;
         for (let i = 0; i < connectedAdresses.length;) {
             const remainingVoters = requiredVoters - totalVoters;
             let pendingVoters = 0;
             const pendingVotes = [];
-            while (pendingVoters < remainingVoters) {
-                if (i >= connectedAdresses.length) {
-                    break;
-                }
+            while (pendingVoters < remainingVoters && i < connectedAdresses.length) {
                 const connectedAddress = connectedAdresses[i];
                 i += 1;
                 if (connectedAddress === this.wallet.public.address || !allAdresses.has(connectedAddress)) {
                     continue;
                 }
-                const balance = oldBalances[connectedAddress];
-                if (!balance || balance.amount == 0) {
+                const votingPower = this.votingPower(connectedAddress);
+                if (!votingPower) {
                     continue;
                 }
-                const votingPower = Math.sqrt(balance.amount);
                 pendingVoters += 1;
                 pendingVotes.push(((async () => {
                     const requests = new Array(disputedAdresses.size);
@@ -255,12 +254,10 @@ class Node extends utils_1.EventTarget {
                     if (!valid) {
                         return false;
                     }
-                    const confirmed = await this.network.shareTransaction(signed, true);
-                    if (confirmed) {
-                        this.table.applyTransaction(signed);
-                        this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
-                        return true;
-                    }
+                    this.table.applyTransaction(signed);
+                    this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
+                    this.network.shareTransaction(signed);
+                    return true;
                 }
                 catch (err) {
                     console.error(err);
@@ -296,6 +293,15 @@ class Node extends utils_1.EventTarget {
             this.queue.pop();
         }
         return actionPromise;
+    }
+    votingPower(address) {
+        const balance = this.table.balances[address];
+        if (!(balance === null || balance === void 0 ? void 0 : balance.amount)) {
+            return 0;
+        }
+        else {
+            return Math.sqrt(balance.amount);
+        }
     }
 }
 exports.default = Node;

@@ -96,14 +96,18 @@ class Wallet {
   signTransaction(transaction: CoinTable.PendingTransaction): CoinTable.SignedTransaction {
     if (!this.node?.table) { throw new Error("Missing current table") }
     if (transaction.reciever !== this.public.address) { throw new Error("Cannot sign transaction, not the recipient") }
+    if (transaction.timestamp > Date.now()) { throw new Error("Cannot sign transaction from the future") }
 
     transaction = deepClone(transaction)
+
+    const senderBalance = this.node.table.balances[transaction.sender]
+    if (!senderBalance || senderBalance.amount < transaction.amount) { throw new Error("Transaction sender does not have enough funds") }
 
     const currentBalance = this.node.table.balances[this.public.address]
     const currentAmount = currentBalance?.amount ?? 0
     const lastTransactionTimestamp = currentBalance?.timestamp ?? 0
-
-    if (transaction.timestamp <= lastTransactionTimestamp) { throw new Error("Invalid transaction timestamp") }
+    
+    if (transaction.timestamp <= lastTransactionTimestamp || transaction.timestamp <= senderBalance.timestamp) { throw new Error("Invalid transaction timestamp") }
 
     const amount = transaction.amount
     if (amount % 1 !== 0 || amount < 1) { throw new Error("Invalid transaction amount") }
@@ -123,6 +127,21 @@ class Wallet {
 
     transaction.recieverSignature = this.signBalance(newBalance).signature
     return transaction as CoinTable.SignedTransaction
+  }
+
+  static verifyConfirmationTransaction(transaction: CoinTable.ConfirmationTransaction): boolean {
+    const transactionBuf = Buffer.concat(
+      Convert.int64ToBuffer(transaction.amount),
+      Convert.int64ToBuffer(transaction.timestamp),
+      Convert.Base58.decodeBuffer(transaction.reciever)
+    )
+
+    try {
+      return new Key.Public(transaction.sender).verify(transactionBuf, transaction.senderTransactionSignature)
+    } catch (err) {
+      console.error(err)
+      return false
+    }
   }
 
   verifyTransaction(transaction: CoinTable.SignedTransaction): boolean {

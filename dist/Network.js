@@ -22,7 +22,6 @@ class Network extends utils_1.EventTarget {
     constructor(wallet) {
         super();
         this.connectedAddresses = new Set();
-        // onRecievingPendingTransaction: (transaction: CoinTable.PendingTransaction, from: string) => Promise<CoinTable.SignedTransaction | false> | CoinTable.SignedTransaction | false
         this.disposed = false;
         this.wallet = wallet;
     }
@@ -70,20 +69,47 @@ class Network extends utils_1.EventTarget {
                 return recieverNetwork.dispatchEvent("tabledigest", { digest: table.digest, from: { address: this.wallet.public.address } });
             }));
         }
-        async shareTransaction(transaction, confirm, excluding) {
+        async shareTransaction(transaction, excluding) {
             await new Promise(r => setTimeout(r, 250));
-            await Promise.all(Array.from(this.connectedAddresses).map(connId => {
+            Array.from(this.connectedAddresses).forEach(connId => {
                 if (connId === excluding) {
                     return;
                 }
                 const recieverNode = this.connections[connId];
-                if (confirm) {
-                    return recieverNode.handleTransaction(transaction);
+                recieverNode.processTransaction(transaction);
+            });
+        }
+        async confirmTransaction(transaction) {
+            await new Promise(r => setTimeout(r, 250));
+            let totalVotes = 0;
+            let affirmitiveVotes = 0;
+            const confirmationResultResponses = [];
+            await Promise.all(Array.from(this.connectedAddresses).map(connId => {
+                if (connId === transaction.reciever || connId === transaction.sender) {
+                    return;
                 }
-                else {
-                    recieverNode.handleTransaction(transaction);
+                const votingPower = this.node.votingPower(connId);
+                if (!votingPower) {
+                    return;
                 }
+                const connection = this.connections[connId];
+                return new Promise(resolve => {
+                    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+                    // @ts-ignore
+                    connection.verifyTransactionPendingConfirmation(transaction, (vote) => {
+                        totalVotes += votingPower;
+                        if (vote) {
+                            affirmitiveVotes += votingPower;
+                            return new Promise(resolve => {
+                                confirmationResultResponses.push(resolve);
+                            });
+                        }
+                        resolve();
+                    });
+                    setTimeout(resolve, 100);
+                });
             }));
+            return affirmitiveVotes >= 0.75 * totalVotes;
         }
         async sendPendingTransaction(transaction) {
             let sendTo = null;
@@ -96,9 +122,9 @@ class Network extends utils_1.EventTarget {
             if (!sendTo || !this.connections[sendTo]) {
                 return null;
             }
-            const recieverNode = this.connections[sendTo]; // .network as Local
+            const recieverNode = this.connections[sendTo];
             await new Promise(r => setTimeout(r, 250));
-            return recieverNode.handlePendingTransaction(transaction, this.wallet.public.address); // recieverNetwork.onRecievingPendingTransaction?.(transaction, this.wallet.public.address) ?? null
+            return recieverNode.signPendingTransaction(transaction, this.wallet.public.address);
         }
         internalDispose() {
             this.connections = {};
@@ -127,6 +153,7 @@ class Network extends utils_1.EventTarget {
             else {
                 this.neighbors.set(address, [uniqueId]);
             }
+            this.network.networkAddresses.insert(address);
         }
         deleteNeighbor(address, uniqueId) {
             const currentIds = this.neighbors.get(address);
@@ -136,6 +163,7 @@ class Network extends utils_1.EventTarget {
                     currentIds.splice(idIndex, 1);
                 }
             }
+            this.network.removeAddressFromNetwork(address);
         }
         internalOpenHandler() {
             if (this.state !== "connecting") {
@@ -186,12 +214,14 @@ class Network extends utils_1.EventTarget {
                 this.send("new_table", this.network.node.table.digest);
             }
             this.network.connectedAddresses.add(this.address);
+            this.network.networkAddresses.insert(this.address);
             this.state = "open";
             this.dispatchEvent("open");
             this.network.dispatchEvent("connection", { address: this.address, host });
         }
         internalClosedHandler() {
             this.network.deleteConnection(this.address, this);
+            this.network.removeAddressFromNetwork(this.address);
             if (this.state !== "open") {
                 this.state = "closed";
                 return;
@@ -255,7 +285,7 @@ class Network extends utils_1.EventTarget {
                     this.send(responseHeader, utils_1.Buffer.concat(utils_1.Convert.int64ToBuffer(balance.amount), utils_1.Convert.int64ToBuffer(balance.timestamp), utils_1.Convert.Base58.decodeBuffer(balance.signature)));
                 }
                 else {
-                    this.send(responseHeader, new Uint8Array);
+                    this.send(responseHeader, new Uint8Array());
                 }
             }
             else if (data.header === "get_table") {
@@ -271,6 +301,23 @@ class Network extends utils_1.EventTarget {
                     }
                 });
             }
+            else if (data.header === "confirm_transaction") {
+                let startIndex = 0;
+                const sender = utils_1.Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key_1.default.Public.LENGTH));
+                const senderTransactionSignature = utils_1.Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key_1.default.SIG_LENGTH));
+                const reciever = utils_1.Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key_1.default.Public.LENGTH));
+                const amount = utils_1.Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 8));
+                const timestamp = utils_1.Convert.bufferToInt(data.body.subarray(startIndex, startIndex += 8));
+                const transaction = { sender, senderTransactionSignature, reciever, amount, timestamp };
+                this.network.node.confirmPendingTransaction(transaction, async (vote) => {
+                    const voteBuffer = new Uint8Array([+vote]);
+                    const response = await this.sendAndWaitForResponse("confirmation_response", voteBuffer, "transaction_confirmed");
+                    if (!response || !response.verified) {
+                        return false;
+                    }
+                    return !!response.body[0];
+                });
+            }
             else if (data.header === "new_transaction") {
                 let startIndex = 0;
                 const sender = utils_1.Convert.Base58.encode(data.body.subarray(startIndex, startIndex += Key_1.default.Public.LENGTH));
@@ -283,29 +330,7 @@ class Network extends utils_1.EventTarget {
                 const transaction = {
                     sender, senderSignature, senderTransactionSignature, reciever, recieverSignature, amount, timestamp
                 };
-                if (startIndex < data.body.length && data.body[data.body.length - 1]) { // Requested a response
-                    const valid = this.network.node.verifyTransaction(transaction);
-                    const txId = senderSignature.slice(0, 16);
-                    const responseHeader = "transaction_result_" + txId;
-                    console.log("Recieved a pending transaction", txId, valid);
-                    if (valid) {
-                        const confirmed = await this.sendAndWaitForResponse(responseHeader, new Uint8Array([1]), "transaction_confirmed_" + txId);
-                        console.log("Confirmation response", confirmed);
-                        if ((confirmed === null || confirmed === void 0 ? void 0 : confirmed.verified) && confirmed.body[0]) {
-                            console.log("Transaction confirmed", txId);
-                            this.network.node.handleTransaction(transaction);
-                        }
-                        else {
-                            console.log("Transaction cancelled", txId);
-                        }
-                    }
-                    else {
-                        this.send(responseHeader, new Uint8Array());
-                    }
-                }
-                else {
-                    this.network.node.handleTransaction(transaction);
-                }
+                this.network.node.processTransaction(transaction);
             }
             else if (data.header === "pending_transaction") {
                 data.body = utils_1.XorCipher.decrypt(data.body, this.sharedEncryptionKey);
@@ -319,7 +344,7 @@ class Network extends utils_1.EventTarget {
                 const pendingTransaction = {
                     sender, senderSignature, senderTransactionSignature, reciever, amount, timestamp
                 };
-                const response = await this.network.node.handlePendingTransaction(pendingTransaction, this.address);
+                const response = await this.network.node.signPendingTransaction(pendingTransaction, this.address);
                 if (response) {
                     const recieverSignature = utils_1.Convert.Base58.decodeBuffer(response.recieverSignature);
                     this.send("pending_transaction_signature", recieverSignature, true);
@@ -626,7 +651,7 @@ class Network extends utils_1.EventTarget {
     class Client extends Network {
         constructor(wallet) {
             super(wallet);
-            // totalConnections = 0
+            this.networkAddresses = new utils_1.SortedList(true);
             this.allConnections = new Set();
             this.connections = {};
             this.cachedServers = {};
@@ -802,6 +827,21 @@ class Network extends utils_1.EventTarget {
             }
             return bestConnection;
         }
+        removeAddressFromNetwork(address) {
+            let stillOnNetwork = false;
+            for (const connection of this.allConnections) {
+                if (connection.neighbors.has(address)) {
+                    stillOnNetwork = true;
+                    break;
+                }
+            }
+            if (!stillOnNetwork) {
+                const index = this.networkAddresses.indexOf(address);
+                if (index >= 0) {
+                    this.networkAddresses.list.splice(index, 1);
+                }
+            }
+        }
         shareWithAll(header, body, excluding) {
             this.connectedAddresses.forEach(connectionAddress => {
                 if (connectionAddress === excluding) {
@@ -860,69 +900,93 @@ class Network extends utils_1.EventTarget {
         async shareTable(table, excluding) {
             this.shareWithAll("new_table", table.digest, excluding);
         }
-        async shareTransaction(transaction, confirm, exclude) {
-            const transactionBuffer = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(transaction.sender, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderTransactionSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.reciever, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.recieverSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.int64ToBuffer(transaction.amount), utils_1.Convert.int64ToBuffer(transaction.timestamp), confirm ? [1] : []);
-            if (confirm) {
-                const txId = transaction.senderSignature.slice(0, 16);
-                const responseHeader = "transaction_result_" + txId;
-                const pendingResponses = [];
-                let totalVotes = 0;
-                let confirmVotes = 0;
-                const responsesRequired = [];
-                this.connectedAddresses.forEach(address => {
-                    if (address === exclude) {
-                        return;
+        async shareTransaction(transaction, exclude) {
+            const transactionBuffer = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(transaction.sender, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderTransactionSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.reciever, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.recieverSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.int64ToBuffer(transaction.amount), utils_1.Convert.int64ToBuffer(transaction.timestamp));
+            this.shareWithAll("new_transaction", transactionBuffer, exclude);
+        }
+        async confirmTransaction(transaction) {
+            const transactionBuffer = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(transaction.sender, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderTransactionSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.reciever, Key_1.default.Public.LENGTH), utils_1.Convert.int64ToBuffer(transaction.amount), utils_1.Convert.int64ToBuffer(transaction.timestamp));
+            const senderBalance = this.node.table.balances[transaction.sender];
+            if (!senderBalance) {
+                return false;
+            }
+            let seed = 0;
+            const amountArr = new Uint32Array(utils_1.Convert.int64ToBuffer(senderBalance.amount).buffer);
+            for (let i = 0; i < 2; i++) {
+                seed ^= amountArr[i];
+            }
+            const timestampArr = new Uint32Array(utils_1.Convert.int64ToBuffer(senderBalance.timestamp).buffer);
+            for (let i = 0; i < 2; i++) {
+                seed ^= timestampArr[i];
+            }
+            const senderArr = new Uint32Array(utils_1.Convert.Base58.decodeBuffer(transaction.sender, 36).buffer);
+            for (let i = 0; i < 9; i++) {
+                seed ^= senderArr[i];
+            }
+            console.log("seed", seed);
+            const rand = utils_1.Random.mulberry32(seed);
+            const potentialQuorumMembers = this.networkAddresses.list.filter(address => {
+                var _a;
+                if (address === transaction.sender || address === transaction.reciever) {
+                    return false;
+                }
+                if (!((_a = this.node.table.balances[address]) === null || _a === void 0 ? void 0 : _a.amount)) {
+                    return false;
+                }
+                return true;
+            });
+            console.log("Potential confirmation connections", potentialQuorumMembers);
+            const potentialAddressesCount = potentialQuorumMembers.length;
+            const requiredVotes = 100;
+            let totalVotes = 0;
+            let affirmativeVotes = 0;
+            const voterConnections = [];
+            const networkAddresses = utils_1.SortedList.fromAlreadySorted(potentialQuorumMembers);
+            for (let i = 0; i < potentialAddressesCount;) {
+                const remainingVotes = requiredVotes - totalVotes;
+                let pendingVotes = 0;
+                const pendingVoteResponses = [];
+                while (pendingVotes < remainingVotes && i < potentialAddressesCount) {
+                    i += 1;
+                    const genAddressArr = [1];
+                    for (let i = 0; i < 33; i++) {
+                        genAddressArr.push(Math.floor(rand() * 256));
                     }
-                    const connection = this.bestConnection(address);
-                    if (!connection) {
-                        return;
-                    }
-                    const balance = this.node.table.balances[address];
-                    if (!(balance === null || balance === void 0 ? void 0 : balance.amount)) {
-                        return;
-                    }
-                    const votingPower = Math.sqrt(balance.amount);
-                    pendingResponses.push(connection.sendAndWaitForResponse("new_transaction", transactionBuffer, responseHeader)
-                        .then(response => {
+                    const genAddress = utils_1.Convert.Base58.encode(genAddressArr);
+                    const addrIndex = networkAddresses.indexOfNearby(genAddress);
+                    const address = networkAddresses.list.splice(addrIndex, 1)[0];
+                    pendingVoteResponses.push((async () => {
+                        const connection = await this.attemptConnection(address);
+                        if ((connection === null || connection === void 0 ? void 0 : connection.state) !== "open") {
+                            return;
+                        }
+                        const response = await connection.sendAndWaitForResponse("confirm_transaction", transactionBuffer, "confirmation_response");
                         if (!(response === null || response === void 0 ? void 0 : response.verified)) {
                             return;
                         }
-                        console.log("Transaction result", address.slice(0, 8), txId, !!(response === null || response === void 0 ? void 0 : response.body[0]));
-                        totalVotes += votingPower;
+                        voterConnections.push(connection);
+                        totalVotes += 1;
                         if (response.body[0]) {
-                            confirmVotes += votingPower;
-                            responsesRequired.push(connection);
+                            affirmativeVotes += 1;
                         }
-                    }));
-                });
-                await Promise.all(pendingResponses);
-                console.log("Transaction results", {
-                    totalVotes, confirmVotes
-                }, confirmVotes >= 0.75 * totalVotes);
-                if (confirmVotes >= 0.75 * totalVotes) {
-                    responsesRequired.forEach(conn => {
-                        conn.send("transaction_confirmed_" + txId, new Uint8Array([1]));
-                    });
-                    return true;
+                    })());
+                    pendingVotes += 1;
                 }
-                else {
-                    responsesRequired.forEach(conn => {
-                        conn.send("transaction_confirmed_" + txId, new Uint8Array());
-                    });
-                    return false;
-                }
+                await Promise.all(pendingVoteResponses);
             }
-            else {
-                this.shareWithAll("new_transaction", transactionBuffer, exclude);
-            }
+            console.log(voterConnections.map(conn => conn.address.slice(0, 10) + "/" + conn.uniqueId));
+            console.log({ totalVotes, affirmativeVotes });
+            const confirmed = affirmativeVotes >= totalVotes * 0.75;
+            const confirmedBuffer = new Uint8Array([+confirmed]);
+            voterConnections.forEach(connection => {
+                connection.send("transaction_confirmed", confirmedBuffer);
+            });
+            return confirmed;
         }
         async sendPendingTransaction(transaction) {
             var _a;
-            let connection = this.bestConnection(transaction.reciever);
-            if (!connection || connection.state !== "open") {
-                connection = await this.attemptConnection(transaction.reciever);
-            }
-            if /* still */ (!connection || connection.state !== "open") {
+            const connection = await this.attemptConnection(transaction.reciever);
+            if ((connection === null || connection === void 0 ? void 0 : connection.state) !== "open") {
                 return null;
             }
             const transactionBuffer = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(transaction.sender, Key_1.default.Public.LENGTH), utils_1.Convert.Base58.decodeBuffer((_a = transaction.senderSignature) !== null && _a !== void 0 ? _a : "1", Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.senderTransactionSignature, Key_1.default.SIG_LENGTH), utils_1.Convert.Base58.decodeBuffer(transaction.reciever, Key_1.default.Public.LENGTH), utils_1.Convert.int64ToBuffer(transaction.amount), utils_1.Convert.int64ToBuffer(transaction.timestamp));

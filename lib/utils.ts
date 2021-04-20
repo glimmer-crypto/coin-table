@@ -1,5 +1,6 @@
 import * as BigNum from "bn.js"
 import { sha512 } from "hash.js"
+import { rand } from "elliptic"
 
 export type BN = BigNum
 export const BN = BigNum
@@ -95,6 +96,151 @@ export function shuffle<T>(array: Array<T>): Array<T> {
   }
 
   return array;
+}
+
+export const Random = {
+  mulberry32(seed: number) {
+    return function(): number {
+      let t = seed += 0x6D2B79F5;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    }
+  },
+  crypto: rand as (bytes: number) => Uint8Array
+}
+
+export class SortedList<Item extends string | number> implements Iterable<Item> {
+  readonly unique: boolean
+  readonly list: Item[] = []
+  get length(): number {
+    return this.list.length
+  }
+
+  constructor(unique?: boolean)
+  constructor(initialList: Item[], unique?: boolean)
+  constructor(uniqueOrInitialList: Item[] | boolean = false, unique = false) {
+    if (typeof uniqueOrInitialList === "boolean") {
+      this.unique = uniqueOrInitialList
+    } else {
+      const list = uniqueOrInitialList.slice().sort((a, b) => {
+        if (a < b) {
+          return -1
+        } else if (a > b) {
+          return 1
+        } else {
+          return 0
+        }
+      })
+
+      this.list = list
+      this.unique = unique
+
+      if (unique) {
+        let index = 0
+        const length = list.length
+        for (let i = 0; i < length; i++) {
+          if (list[index] === list[index - 1]) {
+            list.splice(index, 1)
+          } else {
+            index += 1
+          }
+        }
+      }
+    }
+  }
+
+  [Symbol.iterator](): Iterator<Item, unknown, undefined> {
+    return this.list[Symbol.iterator]()
+  }
+
+  indexOf(value: Item): number {
+    const list = this.list
+
+    let lower = 0
+    let upper = list.length - 1
+    let index = 0
+
+    while (lower <= upper) {
+      index = Math.floor((upper + lower) / 2)
+      const item = list[index]
+
+      if (value > item) {
+        lower = index + 1
+      } else if (value < item) {
+        upper = index - 1
+      } else {
+        return index
+      }
+    }
+
+    return -1
+  }
+
+  indexOfNearby(value: Item): number {
+    const list = this.list
+
+    let lower = 0
+    let upper = list.length - 1
+    let index = -1
+
+    while (lower <= upper) {
+      index = Math.floor((upper + lower) / 2)
+      const item = list[index]
+
+      if (value > item) {
+        lower = index + 1
+      } else if (value < item) {
+        upper = index - 1
+      } else {
+        return index
+      }
+    }
+
+    return index
+  }
+
+  insert(newValue: Item): boolean {
+    const list = this.list
+
+    let lower = 0
+    let upper = list.length - 1
+    let index = 0
+
+    while (lower <= upper) {
+      index = Math.floor((upper + lower) / 2)
+      const item = list[index]
+
+      if (newValue > item) {
+        lower = index + 1
+        index += 1
+      } else if (newValue < item) {
+        upper = index - 1
+      } else {
+        if (!this.unique) {
+          list.splice(index, 0, newValue)
+          return true
+        }
+
+        return false
+      }
+    }
+
+    list.splice(index, 0, newValue)
+    return true
+  }
+
+  static fromAlreadySorted<Item extends string | number>(list: Item[], unique = false): SortedList<Item> {
+    const newList = new SortedList<Item>(unique);
+    const mutable = newList as { list: Item[] }
+    mutable.list = list.slice()
+    
+    return newList
+  }
+
+  clone(): SortedList<Item> {
+    return SortedList.fromAlreadySorted(this.list, this.unique)
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/ban-types

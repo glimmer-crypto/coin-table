@@ -1,5 +1,5 @@
 import Wallet from "./Wallet"
-import { deepClone, DeepReadonly, Convert, Buffer, hash } from "./utils"
+import { deepClone, DeepReadonly, Convert, Buffer, hash, SortedList } from "./utils"
 import Key from "./Key"
 
 type Mutable<T> = {
@@ -22,19 +22,21 @@ class CoinTable {
   readonly invalidReason?: string
   readonly digest: Uint8Array
 
-  readonly walletAddresses: DeepReadonly<string[]>
+  readonly addresses: SortedList<string>// DeepReadonly<string[]>
 
   constructor(balances: CoinTable.Balances) {
     if (!initializing && !initialized) { throw new Error("Not initialized, use CoinTable.initialize()") }
 
     const normalizedBalances: CoinTable.Balances = {}
-    this.walletAddresses = Object.keys(balances).map(addr => {
+    const addresses = Object.keys(balances).map(addr => {
       const norm = Convert.Base58.normalize(addr)
       normalizedBalances[norm] = deepClone(balances[addr])
 
       return norm
     });
-    (this.walletAddresses as string[]).sort()
+
+    this.addresses = new SortedList(addresses, true)
+    // (this.addresses as string[]).sort()
 
     this.balances = normalizedBalances
 
@@ -48,7 +50,7 @@ class CoinTable {
   verifyTable(): { valid: boolean, reason?: string } {
     let balanceSum = 0
     
-    const walletAddresses = this.walletAddresses
+    const walletAddresses = this.addresses
     const balances = this.balances
 
     const identifyingBalance = this.balances[normalizedIdentifier]
@@ -66,7 +68,7 @@ class CoinTable {
     }
 
     for (let i = 0; i < walletAddresses.length; i++) {
-      const walletAddress = walletAddresses[i]
+      const walletAddress = walletAddresses.list[i]
       if (walletAddress === normalizedIdentifier) { continue }
 
       const balance = balances[walletAddress]
@@ -130,8 +132,7 @@ class CoinTable {
     if (!Wallet.verifyBalance(recieverBalance, transaction.reciever)) { throw new CoinTable.TransactionError("Reciever signature is invalid") }
 
     if (!balances[transaction.reciever]) {
-      (this.walletAddresses as string[]).push(transaction.reciever);
-      (this.walletAddresses as string[]).sort()
+      this.addresses.insert(transaction.reciever)
     }
     balances[transaction.sender] = senderBalance
     balances[transaction.reciever] = recieverBalance;
@@ -142,8 +143,8 @@ class CoinTable {
   exportBuffer(): Uint8Array {
     const balances: Uint8Array[] = []
 
-    for (let i = 0; i < this.walletAddresses.length; i++) {
-      const address = this.walletAddresses[i]
+    for (let i = 0; i < this.addresses.length; i++) {
+      const address = this.addresses.list[i]
       const balance = this.balances[address]
 
       balances.push(Buffer.concat(
@@ -260,9 +261,12 @@ namespace CoinTable {
     timestamp: number
   }
 
-  export interface PendingTransaction extends Transaction {
+  export interface ConfirmationTransaction extends Transaction {
+    senderTransactionSignature: string
+  }
+
+  export interface PendingTransaction extends ConfirmationTransaction {
     senderSignature: string,
-    senderTransactionSignature: string,
     recieverSignature?: string
   }
 

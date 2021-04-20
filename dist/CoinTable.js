@@ -11,12 +11,13 @@ class CoinTable {
             throw new Error("Not initialized, use CoinTable.initialize()");
         }
         const normalizedBalances = {};
-        this.walletAddresses = Object.keys(balances).map(addr => {
+        const addresses = Object.keys(balances).map(addr => {
             const norm = utils_1.Convert.Base58.normalize(addr);
             normalizedBalances[norm] = utils_1.deepClone(balances[addr]);
             return norm;
         });
-        this.walletAddresses.sort();
+        this.addresses = new utils_1.SortedList(addresses, true);
+        // (this.addresses as string[]).sort()
         this.balances = normalizedBalances;
         const results = this.verifyTable();
         this.isValid = results.valid;
@@ -25,7 +26,7 @@ class CoinTable {
     }
     verifyTable() {
         let balanceSum = 0;
-        const walletAddresses = this.walletAddresses;
+        const walletAddresses = this.addresses;
         const balances = this.balances;
         const identifyingBalance = this.balances[normalizedIdentifier];
         const hasIdentifier = (identifyingBalance &&
@@ -39,7 +40,7 @@ class CoinTable {
             };
         }
         for (let i = 0; i < walletAddresses.length; i++) {
-            const walletAddress = walletAddresses[i];
+            const walletAddress = walletAddresses.list[i];
             if (walletAddress === normalizedIdentifier) {
                 continue;
             }
@@ -106,8 +107,7 @@ class CoinTable {
             throw new CoinTable.TransactionError("Reciever signature is invalid");
         }
         if (!balances[transaction.reciever]) {
-            this.walletAddresses.push(transaction.reciever);
-            this.walletAddresses.sort();
+            this.addresses.insert(transaction.reciever);
         }
         balances[transaction.sender] = senderBalance;
         balances[transaction.reciever] = recieverBalance;
@@ -115,8 +115,8 @@ class CoinTable {
     }
     exportBuffer() {
         const balances = [];
-        for (let i = 0; i < this.walletAddresses.length; i++) {
-            const address = this.walletAddresses[i];
+        for (let i = 0; i < this.addresses.length; i++) {
+            const address = this.addresses.list[i];
             const balance = this.balances[address];
             balances.push(utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(address, Key_1.default.Public.LENGTH), utils_1.Convert.int64ToBuffer(balance.amount), utils_1.Convert.int64ToBuffer(balance.timestamp), utils_1.Convert.Base58.decodeBuffer(balance.signature, Key_1.default.SIG_LENGTH)));
         }

@@ -1,4 +1,4 @@
-import { DeepReadonly } from "./utils";
+import { DeepReadonly, SortedList } from "./utils";
 declare class CoinTable {
     static readonly identifier: string;
     static readonly networkId: string;
@@ -9,7 +9,7 @@ declare class CoinTable {
     readonly isValid: boolean;
     readonly invalidReason?: string;
     readonly digest: Uint8Array;
-    readonly walletAddresses: DeepReadonly<string[]>;
+    readonly addresses: SortedList<string>;
     constructor(balances: CoinTable.Balances);
     verifyTable(): {
         valid: boolean;
@@ -37,9 +37,11 @@ declare namespace CoinTable {
         amount: number;
         timestamp: number;
     }
-    interface PendingTransaction extends Transaction {
-        senderSignature: string;
+    interface ConfirmationTransaction extends Transaction {
         senderTransactionSignature: string;
+    }
+    interface PendingTransaction extends ConfirmationTransaction {
+        senderSignature: string;
         recieverSignature?: string;
     }
     interface SignedTransaction extends PendingTransaction {

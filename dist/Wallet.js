@@ -79,11 +79,18 @@ class Wallet {
         if (transaction.reciever !== this.public.address) {
             throw new Error("Cannot sign transaction, not the recipient");
         }
+        if (transaction.timestamp > Date.now()) {
+            throw new Error("Cannot sign transaction from the future");
+        }
         transaction = utils_1.deepClone(transaction);
+        const senderBalance = this.node.table.balances[transaction.sender];
+        if (!senderBalance || senderBalance.amount < transaction.amount) {
+            throw new Error("Transaction sender does not have enough funds");
+        }
         const currentBalance = this.node.table.balances[this.public.address];
         const currentAmount = (_b = currentBalance === null || currentBalance === void 0 ? void 0 : currentBalance.amount) !== null && _b !== void 0 ? _b : 0;
         const lastTransactionTimestamp = (_c = currentBalance === null || currentBalance === void 0 ? void 0 : currentBalance.timestamp) !== null && _c !== void 0 ? _c : 0;
-        if (transaction.timestamp <= lastTransactionTimestamp) {
+        if (transaction.timestamp <= lastTransactionTimestamp || transaction.timestamp <= senderBalance.timestamp) {
             throw new Error("Invalid transaction timestamp");
         }
         const amount = transaction.amount;
@@ -101,6 +108,16 @@ class Wallet {
         };
         transaction.recieverSignature = this.signBalance(newBalance).signature;
         return transaction;
+    }
+    static verifyConfirmationTransaction(transaction) {
+        const transactionBuf = utils_1.Buffer.concat(utils_1.Convert.int64ToBuffer(transaction.amount), utils_1.Convert.int64ToBuffer(transaction.timestamp), utils_1.Convert.Base58.decodeBuffer(transaction.reciever));
+        try {
+            return new Key_1.default.Public(transaction.sender).verify(transactionBuf, transaction.senderTransactionSignature);
+        }
+        catch (err) {
+            console.error(err);
+            return false;
+        }
     }
     verifyTransaction(transaction) {
         if (!this.node.table) {

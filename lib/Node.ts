@@ -8,7 +8,13 @@ type NodeEvents = {
   "newtable": CoinTable
 }
 
-export default class Node extends EventTarget<NodeEvents> {
+interface NetworkDelegate {
+  signPendingTransaction(transaction: CoinTable.PendingTransaction, from: string): Promise<false | CoinTable.SignedTransaction>
+  processTransaction(transaction: CoinTable.SignedTransaction): Promise<void>
+  confirmPendingTransaction(transaction: Omit<CoinTable.PendingTransaction, "senderSignature">, castVote: ((vote: true) => Promise<boolean>) & ((vote: false) => void)): void
+}
+
+export default class Node extends EventTarget<NodeEvents> implements NetworkDelegate {
   readonly wallet: Wallet
   readonly network: Network
   table: CoinTable
@@ -48,20 +54,21 @@ export default class Node extends EventTarget<NodeEvents> {
 
   // Network delegate methods
 
-  async handlePendingTransaction(transaction: CoinTable.PendingTransaction, from: string): Promise<false | CoinTable.SignedTransaction> {
+  async signPendingTransaction(transaction: CoinTable.PendingTransaction, from: string): Promise<false | CoinTable.SignedTransaction> {
     const myAddress = this.wallet.public.address
     const currentBalance = this.table.balances[myAddress] ?? { timestamp: 0 }
-    console.log("Pending transaction", transaction, from, transaction.reciever === myAddress, transaction.sender === from, transaction.timestamp > currentBalance.timestamp)
     if (transaction.reciever === myAddress && transaction.sender === from && transaction.timestamp > currentBalance.timestamp) {
       return this.addToQueue(async () => {
         try {
           const signed = this.wallet.signTransaction(transaction)
           
-          const confirmed = await this.network.shareTransaction(signed, true, from)
-          console.log("confirmed", confirmed)
+          const confirmed = await this.network.confirmTransaction(signed)
+          // console.log("confirmed", confirmed)
           if (confirmed) {
             this.table.applyTransaction(signed)
             this.dispatchEvent("transactioncompleted", deepClone(signed))
+
+            this.network.shareTransaction(signed)
             return signed
           }
         } catch (err) {
@@ -76,26 +83,25 @@ export default class Node extends EventTarget<NodeEvents> {
     return false
   }
 
-  verifyTransaction(transaction: CoinTable.SignedTransaction): Promise<boolean> {
-    return this.addToQueue(() => {
-      const balances = {
-        sender: this.table.balances[transaction.sender],
-        reciver: this.table.balances[transaction.reciever]
-      }
-  
-      if (
-        (balances.sender && transaction.timestamp === balances.sender.timestamp && transaction.senderSignature === balances.sender.signature) &&
-        (balances.reciver && transaction.timestamp === balances.reciver.timestamp && transaction.senderSignature === balances.sender.signature)
-      ) {
-        console.log("Transaction applied previously")
-        return true
-      }
-  
-      return this.wallet.verifyTransaction(transaction)
-    })
+  pendingTransactions = new Set<string>()
+  async confirmPendingTransaction(transaction: CoinTable.ConfirmationTransaction, castVote: (vote: boolean) => Promise<boolean>): Promise<void> {
+    if (!Wallet.verifyConfirmationTransaction(transaction)) {
+      castVote(false)
+      return
+    }
+
+    const pendingTransactions = this.pendingTransactions
+
+    if (pendingTransactions.has(transaction.sender)) {
+      castVote(false)
+    } else {
+      pendingTransactions.add(transaction.sender)
+      await castVote(true)
+      pendingTransactions.delete(transaction.sender)
+    }
   }
 
-  handleTransaction(transaction: CoinTable.SignedTransaction): Promise<void> {
+  processTransaction(transaction: CoinTable.SignedTransaction): Promise<void> {
     return this.addToQueue(() => {
       try {
         this.table.applyTransaction(transaction)
@@ -134,7 +140,7 @@ export default class Node extends EventTarget<NodeEvents> {
     const oldBalances = oldTable.balances
     const mergedBalances: CoinTable.Balances = deepClone(oldBalances)
 
-    const allAdresses = new Set<string>(oldTable.walletAddresses)
+    const allAdresses = new Set<string>(oldTable.addresses)
     const disputedAdresses = new Set<string>()
 
     if (!newTable.isValid) {
@@ -142,7 +148,7 @@ export default class Node extends EventTarget<NodeEvents> {
     }
 
     const missingAdresses = new Set(allAdresses)
-    newTable.walletAddresses.forEach(walletAddress => {
+    newTable.addresses.list.forEach(walletAddress => {
       const balance = newTable.balances[walletAddress]
 
         const currentBalance = mergedBalances[walletAddress]
@@ -184,7 +190,7 @@ export default class Node extends EventTarget<NodeEvents> {
     }
 
     const connectedAdresses = shuffle(Array.from(this.network.connectedAddresses))
-    const requiredVoters = Math.max(25, Math.floor(Math.sqrt(connectedAdresses.length)))
+    const requiredVoters = 100
     let totalVoters = 0
 
     for (let i = 0; i < connectedAdresses.length;) {
@@ -192,17 +198,14 @@ export default class Node extends EventTarget<NodeEvents> {
       let pendingVoters = 0
       const pendingVotes: Promise<void>[] = []
 
-      while (pendingVoters < remainingVoters) {
-        if (i >= connectedAdresses.length) { break }
-        
+      while (pendingVoters < remainingVoters && i < connectedAdresses.length) {
         const connectedAddress = connectedAdresses[i]
         i += 1
 
         if (connectedAddress === this.wallet.public.address || !allAdresses.has(connectedAddress)) { continue }
 
-        const balance = oldBalances[connectedAddress]
-        if (!balance || balance.amount == 0) { continue }
-        const votingPower = Math.sqrt(balance.amount)
+        const votingPower = this.votingPower(connectedAddress)
+        if (!votingPower) { continue }
 
         pendingVoters += 1
         pendingVotes.push(((async () => {
@@ -287,13 +290,11 @@ export default class Node extends EventTarget<NodeEvents> {
           const valid = this.wallet.verifyTransaction(signed)
           if (!valid) { return false }
 
-          const confirmed = await this.network.shareTransaction(signed, true)
-          if (confirmed) {
-            this.table.applyTransaction(signed)
-            this.dispatchEvent("transactioncompleted", deepClone(signed))
+          this.table.applyTransaction(signed)
+          this.dispatchEvent("transactioncompleted", deepClone(signed))
 
-            return true
-          }
+          this.network.shareTransaction(signed)
+          return true
         } catch (err) {
           console.error(err)
         }
@@ -329,5 +330,15 @@ export default class Node extends EventTarget<NodeEvents> {
     if (this.queue.length > 1) { this.queue.pop() }
 
     return actionPromise
+  }
+
+  votingPower(address: string): number {
+    const balance = this.table.balances[address]
+
+    if (!balance?.amount) {
+      return 0
+    } else {
+      return Math.sqrt(balance.amount)
+    }
   }
 }
