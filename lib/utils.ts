@@ -98,6 +98,21 @@ export function shuffle<T>(array: Array<T>): Array<T> {
   return array;
 }
 
+export function* shuffledLoop<T>(iterable: Iterable<T>): Generator<T, void, unknown> {
+  let array: T[]
+  if (Array.isArray(iterable)) {
+    array = iterable.slice()
+  } else {
+    array = Array.from(iterable)
+  }
+
+  const length = array.length
+  for (let i = 0; i < length; i++) {
+    const index = Math.floor(Math.random() * array.length)
+    yield array.splice(index, 1)[0]
+  }
+}
+
 export const Random = {
   mulberry32(seed: number) {
     return function(): number {

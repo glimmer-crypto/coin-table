@@ -48,12 +48,12 @@ class Network extends utils_1.EventTarget {
             this.connectedAddresses.add(connectionAddress);
         }
         async requestBalance(balanceAddress, connectionAddress) {
-            var _a;
+            var _a, _b;
             const connection = this.connections[connectionAddress];
             if (!connection) {
                 return null;
             }
-            return (_a = connection.table.balances[balanceAddress]) !== null && _a !== void 0 ? _a : false;
+            return (_b = (_a = (await connection.getTable())) === null || _a === void 0 ? void 0 : _a.balances[balanceAddress]) !== null && _b !== void 0 ? _b : false;
         }
         async requestTable(connectionAddress) {
             const connection = this.connections[connectionAddress];
@@ -94,22 +94,29 @@ class Network extends utils_1.EventTarget {
                 }
                 const connection = this.connections[connId];
                 return new Promise(resolve => {
-                    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-                    // @ts-ignore
-                    connection.verifyTransactionPendingConfirmation(transaction, (vote) => {
-                        totalVotes += votingPower;
+                    connection.confirmPendingTransaction(transaction, (vote) => {
+                        totalVotes += 1;
                         if (vote) {
-                            affirmitiveVotes += votingPower;
-                            return new Promise(resolve => {
-                                confirmationResultResponses.push(resolve);
-                            });
+                            affirmitiveVotes += 1;
                         }
                         resolve();
+                        return new Promise(resolve => {
+                            confirmationResultResponses.push(resolve);
+                        });
                     });
                     setTimeout(resolve, 100);
                 });
             }));
-            return affirmitiveVotes >= 0.75 * totalVotes;
+            const confirmed = affirmitiveVotes >= 0.75 * totalVotes;
+            if (confirmed) {
+                return (signed) => {
+                    confirmationResultResponses.forEach(r => r(signed));
+                };
+            }
+            else {
+                confirmationResultResponses.forEach(r => r(false));
+                return false;
+            }
         }
         async sendPendingTransaction(transaction) {
             let sendTo = null;
@@ -279,7 +286,8 @@ class Network extends utils_1.EventTarget {
             console.log("Recieved message", this.address.slice(0, 8), data.header);
             if (data.header === "get_balance") {
                 const address = utils_1.Convert.Base58.encode(data.body);
-                const balance = this.network.node.table.balances[address];
+                const table = await this.network.node.getTable();
+                const balance = table === null || table === void 0 ? void 0 : table.balances[address];
                 const responseHeader = "response_balance_" + address.slice(0, 8);
                 if (balance) {
                     this.send(responseHeader, utils_1.Buffer.concat(utils_1.Convert.int64ToBuffer(balance.amount), utils_1.Convert.int64ToBuffer(balance.timestamp), utils_1.Convert.Base58.decodeBuffer(balance.signature)));
@@ -311,7 +319,7 @@ class Network extends utils_1.EventTarget {
                 const transaction = { sender, senderTransactionSignature, reciever, amount, timestamp };
                 this.network.node.confirmPendingTransaction(transaction, async (vote) => {
                     const voteBuffer = new Uint8Array([+vote]);
-                    const response = await this.sendAndWaitForResponse("confirmation_response", voteBuffer, "transaction_confirmed");
+                    const response = await this.sendAndWaitForResponse("confirmation_response", voteBuffer, "transaction_confirmed", false, 15000);
                     if (!response || !response.verified) {
                         return false;
                     }
@@ -860,7 +868,7 @@ class Network extends utils_1.EventTarget {
         }
         async requestBalance(balanceAddress, connectionAddress, id) {
             const connection = id ? this.getConnection(connectionAddress, id) : this.bestConnection(connectionAddress);
-            if (!connection) {
+            if ((connection === null || connection === void 0 ? void 0 : connection.state) !== "open") {
                 return null;
             }
             const response = await connection.sendAndWaitForResponse("get_balance", utils_1.Convert.Base58.decodeBuffer(balanceAddress), "response_balance_" + balanceAddress.slice(0, 8));
@@ -977,11 +985,20 @@ class Network extends utils_1.EventTarget {
             console.log(voterConnections.map(conn => conn.address.slice(0, 10) + "/" + conn.uniqueId));
             console.log({ totalVotes, affirmativeVotes });
             const confirmed = affirmativeVotes >= totalVotes * 0.75;
-            const confirmedBuffer = new Uint8Array([+confirmed]);
-            voterConnections.forEach(connection => {
-                connection.send("transaction_confirmed", confirmedBuffer);
-            });
-            return confirmed;
+            if (confirmed) {
+                return (signed) => {
+                    const confirmedBuffer = new Uint8Array([+signed]);
+                    voterConnections.forEach(connection => {
+                        connection.send("transaction_confirmed", confirmedBuffer);
+                    });
+                };
+            }
+            else {
+                voterConnections.forEach(connection => {
+                    connection.send("transaction_confirmed", new Uint8Array([1]));
+                });
+                return false;
+            }
         }
         async sendPendingTransaction(transaction) {
             var _a;

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.Buffer = exports.Convert = exports.EventTarget = exports.SortedList = exports.Random = exports.shuffle = exports.deepClone = exports.XorCipher = exports.hash = exports.BN = void 0;
+exports.Buffer = exports.Convert = exports.EventTarget = exports.SortedList = exports.Random = exports.shuffledLoop = exports.shuffle = exports.deepClone = exports.XorCipher = exports.hash = exports.BN = void 0;
 const BigNum = require("bn.js");
 const hash_js_1 = require("hash.js");
 const elliptic_1 = require("elliptic");
@@ -91,6 +91,21 @@ function shuffle(array) {
     return array;
 }
 exports.shuffle = shuffle;
+function* shuffledLoop(iterable) {
+    let array;
+    if (Array.isArray(iterable)) {
+        array = iterable.slice();
+    }
+    else {
+        array = Array.from(iterable);
+    }
+    const length = array.length;
+    for (let i = 0; i < length; i++) {
+        const index = Math.floor(Math.random() * array.length);
+        yield array.splice(index, 1)[0];
+    }
+}
+exports.shuffledLoop = shuffledLoop;
 exports.Random = {
     mulberry32(seed) {
         return function () {

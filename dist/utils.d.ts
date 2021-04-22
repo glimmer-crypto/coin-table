@@ -8,6 +8,7 @@ export declare namespace XorCipher {
 }
 export declare function deepClone<T extends Record<string, any> | undefined | null>(object: T, newObject?: Record<string, any>): T;
 export declare function shuffle<T>(array: Array<T>): Array<T>;
+export declare function shuffledLoop<T>(iterable: Iterable<T>): Generator<T, void, unknown>;
 export declare const Random: {
     mulberry32(seed: number): () => number;
     crypto: (bytes: number) => Uint8Array;

@@ -27,6 +27,7 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
     determineNewTable(oldTable: CoinTable, newTable: CoinTable): Promise<CoinTable | null>;
     private failedTransactions;
     private retryFailedTransactions;
+    confirmBalance(address: string): Promise<boolean>;
     sendTransaction(amount: number, reciever: string): Promise<boolean | null>;
     getTable(): Promise<CoinTable | null>;
     private queue;

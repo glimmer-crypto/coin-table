@@ -29,7 +29,7 @@ declare abstract class Network extends EventTarget<NetworkEvents> {
     abstract shareTable(table: CoinTable, exclude?: string): Promise<void>;
     abstract shareTransaction(transaction: CoinTable.SignedTransaction, exclude?: string): Promise<boolean | void>;
     abstract sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<CoinTable.SignedTransaction | false | null>;
-    abstract confirmTransaction(transaction: CoinTable.PendingTransaction): Promise<boolean>;
+    abstract confirmTransaction(transaction: CoinTable.PendingTransaction): Promise<false | ((signed: boolean) => void)>;
     protected disposed: boolean;
     dispose(): void;
     protected abstract internalDispose(): void;
@@ -42,7 +42,7 @@ declare namespace Network {
         requestTable(connectionAddress: string): Promise<CoinTable | null>;
         shareTable(table: CoinTable, excluding: string): Promise<void>;
         shareTransaction(transaction: CoinTable.SignedTransaction, excluding?: string): Promise<void>;
-        confirmTransaction(transaction: CoinTable.PendingTransaction): Promise<boolean>;
+        confirmTransaction(transaction: CoinTable.PendingTransaction): Promise<false | ((signed: boolean) => void)>;
         sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<CoinTable.SignedTransaction | false | null>;
         internalDispose(): void;
     }
@@ -124,7 +124,7 @@ declare namespace Network {
         requestTable(connectionAddress: string, id?: number): Promise<CoinTable | null>;
         shareTable(table: CoinTable, excluding?: string | Connection): Promise<void>;
         shareTransaction(transaction: CoinTable.SignedTransaction, exclude?: string | Connection): Promise<void>;
-        confirmTransaction(transaction: CoinTable.ConfirmationTransaction): Promise<boolean>;
+        confirmTransaction(transaction: CoinTable.ConfirmationTransaction): Promise<false | ((signed: boolean) => void)>;
         sendPendingTransaction(transaction: CoinTable.PendingTransaction): Promise<false | CoinTable.SignedTransaction | null>;
         internalDispose(): void;
     }

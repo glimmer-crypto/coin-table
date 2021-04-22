@@ -1,7 +1,7 @@
 import Wallet from "./Wallet"
 import CoinTable from "./CoinTable"
 import Network from "./Network"
-import { EventTarget, Buffer, Convert, deepClone, shuffle } from "./utils"
+import { EventTarget, Buffer, Convert, deepClone, shuffle, shuffledLoop } from "./utils"
 
 type NodeEvents = {
   "transactioncompleted": CoinTable.SignedTransaction,
@@ -63,13 +63,18 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
           const signed = this.wallet.signTransaction(transaction)
           
           const confirmed = await this.network.confirmTransaction(signed)
-          // console.log("confirmed", confirmed)
-          if (confirmed) {
+          console.log("confirmed", !!confirmed)
+          const balanceConfirmed = await this.confirmBalance(transaction.sender)
+          console.log("balance confirmed", balanceConfirmed)
+          if (confirmed && balanceConfirmed) {
             this.table.applyTransaction(signed)
             this.dispatchEvent("transactioncompleted", deepClone(signed))
 
             this.network.shareTransaction(signed)
+            confirmed(true)
             return signed
+          } else if (confirmed) {
+            confirmed(false)
           }
         } catch (err) {
           console.error(err)
@@ -276,6 +281,54 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
         }
       }
     })
+  }
+
+  async confirmBalance(address: string): Promise<boolean> {
+    const requiredVotes = 100
+    let totalVoters = 0
+    let totalVotes = 0
+    let affirmativeVotes = 0
+
+    const thisBalance = this.table.balances[address]
+
+    let pendingVotes: Promise<void>[] = []
+    for (const connectedAddress of shuffledLoop(this.network.connectedAddresses)) {
+      if (connectedAddress === address) { continue }
+
+      const votingPower = this.votingPower(address)
+      if (!votingPower) { continue }
+
+      if (pendingVotes.length + totalVoters >= requiredVotes) {
+        await Promise.all(pendingVotes)
+        pendingVotes = []
+      }
+      if (totalVoters >= requiredVotes) { break }
+
+      pendingVotes.push((async () => {
+        const balance = await this.network.requestBalance(address, connectedAddress)
+        if (balance === null) { return }
+
+        totalVoters += 1
+        totalVotes += votingPower
+        if (balance === false) {
+          if (!thisBalance) {
+            affirmativeVotes += votingPower
+          }
+        } else if (
+          balance.amount === thisBalance?.amount &&
+          balance.timestamp === thisBalance?.timestamp &&
+          balance.signature === thisBalance?.signature
+        ) {
+          affirmativeVotes += votingPower
+        }
+      })())
+    }
+
+    if (affirmativeVotes >= totalVotes * 0.75) {
+      return true
+    } else {
+      return false
+    }
   }
 
   async sendTransaction(amount: number, reciever: string): Promise<boolean | null> {

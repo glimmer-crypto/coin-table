@@ -47,15 +47,25 @@ CoinTable.initialize(
   }
 )
 
-const wallet = new Wallet("**", "2jmBMjcxTVvpZ5m23iN3NwAFvSPCFiQSr9jnPZZrKPV5Ur")
+const wallet = new Wallet("***", "2jmBMjcxTVvpZ5m23iN3NwAFvSPCFiQSr9jnPZZrKPV5Ur")
 const client = new Network.Client(wallet)
 const node = new Node(wallet, client)
 
-const addresses = ["2tYgHwwWV8msP8D73y3wRUh8fqGJ3CpDxZWBBRBtYK9WWP", "3HzSquXCpBbMWKffV288Cc1TcgqfgdpaAQcDw2etTrKezf"]
+const wallet2 = new Wallet("***", "2ocJ1Eh1MgcnLaNqgimQapDLPjzk9CExw6du6JxbsJYKdJ")
+const addresses = ["2tYgHwwWV8msP8D73y3wRUh8fqGJ3CpDxZWBBRBtYK9WWP"/*, "3HzSquXCpBbMWKffV288Cc1TcgqfgdpaAQcDw2etTrKezf"*/]
 
 function sendConflictingTransactions() {
+  const transaction = wallet.createTransaction(1, wallet2.public)
+
+  // @ts-ignore
+  wallet2.node = {
+    table: node.table
+  }
+  const signed = wallet2.signTransaction(transaction)
+  client.shareTransaction(signed)
+  
   addresses.forEach(address => {
-    const transaction = wallet.createTransaction(100, address)
+    const transaction = wallet.createTransaction(1, address)
     const connection = client.bestConnection(address)
 
     console.log(transaction)

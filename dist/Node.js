@@ -48,12 +48,18 @@ class Node extends utils_1.EventTarget {
                 try {
                     const signed = this.wallet.signTransaction(transaction);
                     const confirmed = await this.network.confirmTransaction(signed);
-                    // console.log("confirmed", confirmed)
-                    if (confirmed) {
+                    console.log("confirmed", !!confirmed);
+                    const balanceConfirmed = await this.confirmBalance(transaction.sender);
+                    console.log("balance confirmed", balanceConfirmed);
+                    if (confirmed && balanceConfirmed) {
                         this.table.applyTransaction(signed);
                         this.dispatchEvent("transactioncompleted", utils_1.deepClone(signed));
                         this.network.shareTransaction(signed);
+                        confirmed(true);
                         return signed;
+                    }
+                    else if (confirmed) {
+                        confirmed(false);
                     }
                 }
                 catch (err) {
@@ -241,6 +247,54 @@ class Node extends utils_1.EventTarget {
                 }
             }
         });
+    }
+    async confirmBalance(address) {
+        const requiredVotes = 100;
+        let totalVoters = 0;
+        let totalVotes = 0;
+        let affirmativeVotes = 0;
+        const thisBalance = this.table.balances[address];
+        let pendingVotes = [];
+        for (const connectedAddress of utils_1.shuffledLoop(this.network.connectedAddresses)) {
+            if (connectedAddress === address) {
+                continue;
+            }
+            const votingPower = this.votingPower(address);
+            if (!votingPower) {
+                continue;
+            }
+            if (pendingVotes.length + totalVoters >= requiredVotes) {
+                await Promise.all(pendingVotes);
+                pendingVotes = [];
+            }
+            if (totalVoters >= requiredVotes) {
+                break;
+            }
+            pendingVotes.push((async () => {
+                const balance = await this.network.requestBalance(address, connectedAddress);
+                if (balance === null) {
+                    return;
+                }
+                totalVoters += 1;
+                totalVotes += votingPower;
+                if (balance === false) {
+                    if (!thisBalance) {
+                        affirmativeVotes += votingPower;
+                    }
+                }
+                else if (balance.amount === (thisBalance === null || thisBalance === void 0 ? void 0 : thisBalance.amount) &&
+                    balance.timestamp === (thisBalance === null || thisBalance === void 0 ? void 0 : thisBalance.timestamp) &&
+                    balance.signature === (thisBalance === null || thisBalance === void 0 ? void 0 : thisBalance.signature)) {
+                    affirmativeVotes += votingPower;
+                }
+            })());
+        }
+        if (affirmativeVotes >= totalVotes * 0.75) {
+            return true;
+        }
+        else {
+            return false;
+        }
     }
     async sendTransaction(amount, reciever) {
         reciever = utils_1.Convert.Base58.normalize(reciever);
