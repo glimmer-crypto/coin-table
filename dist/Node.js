@@ -289,6 +289,7 @@ class Node extends utils_1.EventTarget {
                 }
             })());
         }
+        await Promise.all(pendingVotes);
         if (affirmativeVotes >= totalVotes * 0.75) {
             return true;
         }

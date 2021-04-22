@@ -323,6 +323,7 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
         }
       })())
     }
+    await Promise.all(pendingVotes)
 
     if (affirmativeVotes >= totalVotes * 0.75) {
       return true
