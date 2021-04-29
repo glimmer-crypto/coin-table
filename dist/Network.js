@@ -285,8 +285,9 @@ class Network extends utils_1.EventTarget {
             }
             console.log("Recieved message", this.address.slice(0, 8), data.header);
             if (data.header === "get_balance") {
-                const address = utils_1.Convert.Base58.encode(data.body);
-                const table = await this.network.node.getTable();
+                const address = utils_1.Convert.Base58.encode(data.body.subarray(0, Key_1.default.Public.LENGTH));
+                const immediate = data.body[Key_1.default.Public.LENGTH];
+                const table = immediate ? this.network.node.table : await this.network.node.getTable();
                 const balance = table === null || table === void 0 ? void 0 : table.balances[address];
                 const responseHeader = "response_balance_" + address.slice(0, 8);
                 if (balance) {
@@ -866,12 +867,13 @@ class Network extends utils_1.EventTarget {
                 });
             });
         }
-        async requestBalance(balanceAddress, connectionAddress, id) {
+        async requestBalance(balanceAddress, connectionAddress, immediate = false, id) {
             const connection = id ? this.getConnection(connectionAddress, id) : this.bestConnection(connectionAddress);
             if ((connection === null || connection === void 0 ? void 0 : connection.state) !== "open") {
                 return null;
             }
-            const response = await connection.sendAndWaitForResponse("get_balance", utils_1.Convert.Base58.decodeBuffer(balanceAddress), "response_balance_" + balanceAddress.slice(0, 8));
+            const message = utils_1.Buffer.concat(utils_1.Convert.Base58.decodeBuffer(balanceAddress, Key_1.default.Public.LENGTH), immediate ? [1] : []);
+            const response = await connection.sendAndWaitForResponse("get_balance", message, "response_balance_" + balanceAddress.slice(0, 8));
             if (!(response === null || response === void 0 ? void 0 : response.verified)) {
                 return null;
             }

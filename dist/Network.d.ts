@@ -24,7 +24,7 @@ declare abstract class Network extends EventTarget<NetworkEvents> {
     node: Node;
     connectedAddresses: Set<string>;
     constructor(wallet: Wallet);
-    abstract requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | false | null>;
+    abstract requestBalance(balanceAddress: string, connectionAddress: string, immediate?: boolean, connectionId?: number): Promise<CoinTable.SignedBalance | false | null>;
     abstract requestTable(connectionAddress: string, id?: number): Promise<CoinTable | null>;
     abstract shareTable(table: CoinTable, exclude?: string): Promise<void>;
     abstract shareTransaction(transaction: CoinTable.SignedTransaction, exclude?: string): Promise<boolean | void>;
@@ -120,7 +120,7 @@ declare namespace Network {
         bestConnection(address: string): Connection | null;
         removeAddressFromNetwork(address: string): void;
         shareWithAll(header: string, body: Uint8Array, excluding?: string | Connection): void;
-        requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | false | null>;
+        requestBalance(balanceAddress: string, connectionAddress: string, immediate?: boolean, id?: number): Promise<CoinTable.SignedBalance | false | null>;
         requestTable(connectionAddress: string, id?: number): Promise<CoinTable | null>;
         shareTable(table: CoinTable, excluding?: string | Connection): Promise<void>;
         shareTransaction(transaction: CoinTable.SignedTransaction, exclude?: string | Connection): Promise<void>;

@@ -24,7 +24,7 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
     /**
      * @returns A `CoinTable` if there is a new table and `null` if not
      */
-    determineNewTable(oldTable: CoinTable, newTable: CoinTable): Promise<CoinTable | null>;
+    determineNewTable(oldTable: CoinTable, newTable: CoinTable, from: string): Promise<CoinTable | false | null>;
     private failedTransactions;
     private retryFailedTransactions;
     confirmBalance(address: string): Promise<boolean>;

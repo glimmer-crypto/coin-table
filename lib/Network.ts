@@ -40,7 +40,7 @@ abstract class Network extends EventTarget<NetworkEvents> {
     this.wallet = wallet
   }
 
-  abstract requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | false | null>
+  abstract requestBalance(balanceAddress: string, connectionAddress: string, immediate?: boolean, connectionId?: number): Promise<CoinTable.SignedBalance | false | null>
   abstract requestTable(connectionAddress: string, id?: number): Promise<CoinTable | null>
   abstract shareTable(table: CoinTable, exclude?: string): Promise<void>
   abstract shareTransaction(transaction: CoinTable.SignedTransaction, exclude?: string): Promise<boolean | void>
@@ -377,8 +377,9 @@ namespace Network {
       console.log("Recieved message", this.address.slice(0, 8), data.header)
 
       if (data.header === "get_balance") {
-        const address = Convert.Base58.encode(data.body)
-        const table = await this.network.node.getTable()
+        const address = Convert.Base58.encode(data.body.subarray(0, Key.Public.LENGTH))
+        const immediate = data.body[Key.Public.LENGTH]
+        const table = immediate ? this.network.node.table : await this.network.node.getTable()
         const balance = table?.balances[address]
 
         const responseHeader = "response_balance_" + address.slice(0, 8)
@@ -1020,11 +1021,15 @@ namespace Network {
       })
     }
 
-    async requestBalance(balanceAddress: string, connectionAddress: string, id?: number): Promise<CoinTable.SignedBalance | false | null> {
+    async requestBalance(balanceAddress: string, connectionAddress: string, immediate = false, id?: number): Promise<CoinTable.SignedBalance | false | null> {
       const connection = id ? this.getConnection(connectionAddress, id) : this.bestConnection(connectionAddress)
       if (connection?.state !== "open") { return null }
 
-      const response = await connection.sendAndWaitForResponse("get_balance", Convert.Base58.decodeBuffer(balanceAddress), "response_balance_" + balanceAddress.slice(0, 8))
+      const message = Buffer.concat(
+        Convert.Base58.decodeBuffer(balanceAddress, Key.Public.LENGTH),
+        immediate ? [1] : []
+      )
+      const response = await connection.sendAndWaitForResponse("get_balance", message, "response_balance_" + balanceAddress.slice(0, 8))
       if (!response?.verified) { return null }
       if (!response.body.length) { return false }
 

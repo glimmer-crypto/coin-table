@@ -27,8 +27,11 @@ class Node extends utils_1.EventTarget {
                     if (!table) {
                         return;
                     }
-                    const newTable = await this.determineNewTable(this.table, table);
+                    const newTable = await this.determineNewTable(this.table, table, from.address);
                     if (!newTable) {
+                        if (newTable === false) {
+                            await this.network.shareTable(this.table);
+                        }
                         return;
                     }
                     this.table = newTable;
@@ -117,14 +120,14 @@ class Node extends utils_1.EventTarget {
     /**
      * @returns A `CoinTable` if there is a new table and `null` if not
      */
-    async determineNewTable(oldTable, newTable) {
-        var _a, _b;
+    async determineNewTable(oldTable, newTable, from) {
+        var _a, _b, _c, _d;
         const oldBalances = oldTable.balances;
         const mergedBalances = utils_1.deepClone(oldBalances);
         const allAdresses = new Set(oldTable.addresses);
         const disputedAdresses = new Set();
         if (!newTable.isValid) {
-            return null;
+            return false;
         }
         const missingAdresses = new Set(allAdresses);
         newTable.addresses.list.forEach(walletAddress => {
@@ -158,67 +161,67 @@ class Node extends utils_1.EventTarget {
             }
         }
         const myVotes = disputedAdresses.size * Math.sqrt((_b = (_a = oldBalances[this.wallet.public.address]) === null || _a === void 0 ? void 0 : _a.amount) !== null && _b !== void 0 ? _b : 0);
+        const senderVotes = disputedAdresses.size * Math.sqrt((_d = (_c = oldBalances[from]) === null || _c === void 0 ? void 0 : _c.amount) !== null && _d !== void 0 ? _d : 0);
         const votes = {
             old: myVotes,
-            new: 0,
+            new: senderVotes,
             other: 0,
             total: 0
         };
-        const connectedAdresses = utils_1.shuffle(Array.from(this.network.connectedAddresses));
         const requiredVoters = 100;
         let totalVoters = 0;
-        for (let i = 0; i < connectedAdresses.length;) {
-            const remainingVoters = requiredVoters - totalVoters;
-            let pendingVoters = 0;
-            const pendingVotes = [];
-            while (pendingVoters < remainingVoters && i < connectedAdresses.length) {
-                const connectedAddress = connectedAdresses[i];
-                i += 1;
-                if (connectedAddress === this.wallet.public.address || !allAdresses.has(connectedAddress)) {
-                    continue;
-                }
-                const votingPower = this.votingPower(connectedAddress);
-                if (!votingPower) {
-                    continue;
-                }
-                pendingVoters += 1;
-                pendingVotes.push(((async () => {
-                    const requests = new Array(disputedAdresses.size);
-                    let addrIndex = 0;
-                    disputedAdresses.forEach(disputedAddress => {
-                        addrIndex += 1;
-                        requests[addrIndex] = (async () => {
-                            var _a, _b;
-                            const response = await this.network.requestBalance(disputedAddress, connectedAddress);
-                            if (response === null) {
-                                return;
-                            }
-                            const amount = response ? response.amount : undefined;
-                            if (amount === ((_a = oldTable.balances[disputedAddress]) === null || _a === void 0 ? void 0 : _a.amount)) {
-                                votes.old += votingPower;
-                            }
-                            else if (amount === ((_b = newTable.balances[disputedAddress]) === null || _b === void 0 ? void 0 : _b.amount)) {
-                                votes.new += votingPower;
-                            }
-                            else {
-                                votes.other += votingPower;
-                            }
-                            votes.total += votingPower;
-                            totalVoters += 1;
-                        })();
-                    });
-                    await Promise.all(requests);
-                })()));
+        let pendingVotes = [];
+        for (const connectedAddress of utils_1.shuffledLoop(this.network.connectedAddresses)) {
+            if (connectedAddress === from || connectedAddress === this.wallet.public.address) {
+                continue;
             }
-            await Promise.all(pendingVotes);
+            const votingPower = this.votingPower(connectedAddress);
+            if (!votingPower) {
+                continue;
+            }
+            pendingVotes.push((async () => {
+                const requests = new Array(disputedAdresses.size);
+                let addrIndex = 0;
+                disputedAdresses.forEach(disputedAddress => {
+                    requests[addrIndex] = (async () => {
+                        var _a, _b;
+                        const response = await this.network.requestBalance(disputedAddress, connectedAddress, true);
+                        if (response === null) {
+                            return;
+                        }
+                        const amount = response ? response.amount : undefined;
+                        if (amount === ((_a = oldTable.balances[disputedAddress]) === null || _a === void 0 ? void 0 : _a.amount)) {
+                            votes.old += votingPower;
+                        }
+                        else if (amount === ((_b = newTable.balances[disputedAddress]) === null || _b === void 0 ? void 0 : _b.amount)) {
+                            votes.new += votingPower;
+                        }
+                        else {
+                            votes.other += votingPower;
+                        }
+                        votes.total += votingPower;
+                        totalVoters += 1;
+                    })();
+                    addrIndex += 1;
+                });
+                await Promise.all(requests);
+            })());
+            if (pendingVotes.length + totalVoters >= requiredVoters) {
+                await Promise.all(pendingVotes);
+                pendingVotes = [];
+            }
+            if (totalVoters >= requiredVoters) {
+                break;
+            }
         }
-        console.log("Votes", this.wallet.public.address.slice(0, 8), votes);
+        await Promise.all(pendingVotes);
+        console.log("Votes", votes);
         // 3/4 majority
-        if (votes.new >= 0.75 * votes.total) {
+        if (votes.new > 0.75 * votes.total) {
             return newTable;
         }
         else {
-            return null;
+            return false;
         }
     }
     retryFailedTransactions(transaction) {
@@ -263,13 +266,6 @@ class Node extends utils_1.EventTarget {
             if (!votingPower) {
                 continue;
             }
-            if (pendingVotes.length + totalVoters >= requiredVotes) {
-                await Promise.all(pendingVotes);
-                pendingVotes = [];
-            }
-            if (totalVoters >= requiredVotes) {
-                break;
-            }
             pendingVotes.push((async () => {
                 const balance = await this.network.requestBalance(address, connectedAddress);
                 if (balance === null) {
@@ -288,6 +284,13 @@ class Node extends utils_1.EventTarget {
                     affirmativeVotes += votingPower;
                 }
             })());
+            if (pendingVotes.length + totalVoters >= requiredVotes) {
+                await Promise.all(pendingVotes);
+                pendingVotes = [];
+            }
+            if (totalVoters >= requiredVotes) {
+                break;
+            }
         }
         await Promise.all(pendingVotes);
         if (affirmativeVotes >= totalVotes * 0.75) {
