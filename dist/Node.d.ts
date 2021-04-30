@@ -32,6 +32,6 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
     getTable(): Promise<CoinTable | null>;
     private queue;
     private addToQueue;
-    votingPower(address: string): number;
+    voters(): Generator<string, void, unknown>;
 }
 export {};

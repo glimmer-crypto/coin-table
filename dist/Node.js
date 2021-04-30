@@ -121,7 +121,6 @@ class Node extends utils_1.EventTarget {
      * @returns A `CoinTable` if there is a new table and `null` if not
      */
     async determineNewTable(oldTable, newTable, from) {
-        var _a, _b, _c, _d;
         const oldBalances = oldTable.balances;
         const mergedBalances = utils_1.deepClone(oldBalances);
         const allAdresses = new Set(oldTable.addresses);
@@ -160,23 +159,17 @@ class Node extends utils_1.EventTarget {
                 return returnTable;
             }
         }
-        const myVotes = disputedAdresses.size * Math.sqrt((_b = (_a = oldBalances[this.wallet.public.address]) === null || _a === void 0 ? void 0 : _a.amount) !== null && _b !== void 0 ? _b : 0);
-        const senderVotes = disputedAdresses.size * Math.sqrt((_d = (_c = oldBalances[from]) === null || _c === void 0 ? void 0 : _c.amount) !== null && _d !== void 0 ? _d : 0);
         const votes = {
-            old: myVotes,
-            new: senderVotes,
+            old: 0,
+            new: 0,
             other: 0,
             total: 0
         };
         const requiredVoters = 100;
         let totalVoters = 0;
         let pendingVotes = [];
-        for (const connectedAddress of utils_1.shuffledLoop(this.network.connectedAddresses)) {
-            if (connectedAddress === from || connectedAddress === this.wallet.public.address) {
-                continue;
-            }
-            const votingPower = this.votingPower(connectedAddress);
-            if (!votingPower) {
+        for (const connectedAddress of this.voters()) {
+            if (connectedAddress === from) {
                 continue;
             }
             pendingVotes.push((async () => {
@@ -191,15 +184,15 @@ class Node extends utils_1.EventTarget {
                         }
                         const amount = response ? response.amount : undefined;
                         if (amount === ((_a = oldTable.balances[disputedAddress]) === null || _a === void 0 ? void 0 : _a.amount)) {
-                            votes.old += votingPower;
+                            votes.old += 1;
                         }
                         else if (amount === ((_b = newTable.balances[disputedAddress]) === null || _b === void 0 ? void 0 : _b.amount)) {
-                            votes.new += votingPower;
+                            votes.new += 1;
                         }
                         else {
-                            votes.other += votingPower;
+                            votes.other += 1;
                         }
-                        votes.total += votingPower;
+                        votes.total += 1;
                         totalVoters += 1;
                     })();
                     addrIndex += 1;
@@ -253,17 +246,12 @@ class Node extends utils_1.EventTarget {
     }
     async confirmBalance(address) {
         const requiredVotes = 100;
-        let totalVoters = 0;
         let totalVotes = 0;
         let affirmativeVotes = 0;
         const thisBalance = this.table.balances[address];
         let pendingVotes = [];
-        for (const connectedAddress of utils_1.shuffledLoop(this.network.connectedAddresses)) {
+        for (const connectedAddress of this.voters()) {
             if (connectedAddress === address) {
-                continue;
-            }
-            const votingPower = this.votingPower(address);
-            if (!votingPower) {
                 continue;
             }
             pendingVotes.push((async () => {
@@ -271,24 +259,23 @@ class Node extends utils_1.EventTarget {
                 if (balance === null) {
                     return;
                 }
-                totalVoters += 1;
-                totalVotes += votingPower;
+                totalVotes += 1;
                 if (balance === false) {
                     if (!thisBalance) {
-                        affirmativeVotes += votingPower;
+                        affirmativeVotes += 1;
                     }
                 }
                 else if (balance.amount === (thisBalance === null || thisBalance === void 0 ? void 0 : thisBalance.amount) &&
                     balance.timestamp === (thisBalance === null || thisBalance === void 0 ? void 0 : thisBalance.timestamp) &&
                     balance.signature === (thisBalance === null || thisBalance === void 0 ? void 0 : thisBalance.signature)) {
-                    affirmativeVotes += votingPower;
+                    affirmativeVotes += 1;
                 }
             })());
-            if (pendingVotes.length + totalVoters >= requiredVotes) {
+            if (pendingVotes.length + totalVotes >= requiredVotes) {
                 await Promise.all(pendingVotes);
                 pendingVotes = [];
             }
-            if (totalVoters >= requiredVotes) {
+            if (totalVotes >= requiredVotes) {
                 break;
             }
         }
@@ -352,13 +339,39 @@ class Node extends utils_1.EventTarget {
         }
         return actionPromise;
     }
-    votingPower(address) {
-        const balance = this.table.balances[address];
-        if (!(balance === null || balance === void 0 ? void 0 : balance.amount)) {
-            return 0;
-        }
-        else {
-            return Math.sqrt(balance.amount);
+    *voters() {
+        let stakePool = 0;
+        const voters = [];
+        this.network.connectedAddresses.forEach(address => {
+            var _a;
+            const stake = (_a = this.table.balances[address]) === null || _a === void 0 ? void 0 : _a.amount;
+            if (stake) {
+                voters.push({
+                    address, stake
+                });
+                stakePool += stake;
+            }
+        });
+        console.log(voters);
+        const count = voters.length;
+        for (let i = 0; i < count; i++) {
+            let voterIndex = 0;
+            let voter = null;
+            const selection = Math.random() * stakePool;
+            for (let i = 0, accumulator = 0; i < voters.length; i++) {
+                voterIndex = i;
+                voter = voters[i];
+                accumulator += voter.stake;
+                if (accumulator > selection) {
+                    break;
+                }
+            }
+            if (!voter) {
+                return;
+            }
+            yield voter.address;
+            stakePool -= voter.stake;
+            voters.splice(voterIndex, 1);
         }
     }
 }

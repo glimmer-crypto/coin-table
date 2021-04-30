@@ -116,9 +116,6 @@ namespace Network {
         Array.from(this.connectedAddresses).map(connId => {
           if (connId === transaction.reciever || connId === transaction.sender) { return }
 
-          const votingPower = this.node.votingPower(connId)
-          if (!votingPower) { return }
-
           const connection = this.connections[connId]
           return new Promise<void>(resolve => {
             connection.confirmPendingTransaction(transaction, (vote: boolean) => {
@@ -1125,42 +1122,40 @@ namespace Network {
       let totalVotes = 0
       let affirmativeVotes = 0
       const voterConnections: Connection[] = []
+      let pendingVotes: Promise<void>[] = []
 
       const networkAddresses = SortedList.fromAlreadySorted(potentialQuorumMembers)
-      for (let i = 0; i < potentialAddressesCount;) {
-        const remainingVotes = requiredVotes - totalVotes
-        let pendingVotes = 0
-        const pendingVoteResponses: Promise<void>[] = []
-
-        while (pendingVotes < remainingVotes && i < potentialAddressesCount) {
-          i += 1
-
-          const genAddressArr = [1]
-          for (let i = 0; i < 33; i++) {
-            genAddressArr.push(Math.floor(rand() * 256))
-          }
-          const genAddress = Convert.Base58.encode(genAddressArr)
-          const addrIndex = networkAddresses.indexOfNearby(genAddress)
-
-          const address = networkAddresses.list.splice(addrIndex, 1)[0]
-          pendingVoteResponses.push((async () => {
-            const connection = await this.attemptConnection(address)
-            if (connection?.state !== "open") { return }
-
-            const response = await connection.sendAndWaitForResponse("confirm_transaction", transactionBuffer, "confirmation_response")
-            if (!response?.verified) { return }
-
-            voterConnections.push(connection)
-            totalVotes += 1
-            if (response.body[0]) {
-              affirmativeVotes += 1
-            }
-          })())
-          pendingVotes += 1
+      for (let i = 0; i < potentialAddressesCount; i++) {
+        const genAddressArr = [1]
+        for (let i = 0; i < 33; i++) {
+          genAddressArr.push(Math.floor(rand() * 256))
         }
+        const genAddress = Convert.Base58.encode(genAddressArr)
+        const addrIndex = networkAddresses.indexOfNearby(genAddress)
 
-        await Promise.all(pendingVoteResponses)
+        const address = networkAddresses.list.splice(addrIndex, 1)[0]
+
+        pendingVotes.push((async () => {
+          const connection = await this.attemptConnection(address)
+          if (connection?.state !== "open") { return }
+
+          const response = await connection.sendAndWaitForResponse("confirm_transaction", transactionBuffer, "confirmation_response")
+          if (!response?.verified) { return }
+
+          voterConnections.push(connection)
+          totalVotes += 1
+          if (response.body[0]) {
+            affirmativeVotes += 1
+          }
+        })())
+
+        if (totalVotes + pendingVotes.length >= requiredVotes) {
+          await Promise.all(pendingVotes)
+          pendingVotes = []
+        }
+        if (totalVotes >= requiredVotes) { break }
       }
+      await Promise.all(pendingVotes)
 
       console.log(voterConnections.map(conn => conn.address.slice(0, 10) + "/" + conn.uniqueId))
       console.log({ totalVotes, affirmativeVotes })

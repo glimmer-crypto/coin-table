@@ -1,7 +1,7 @@
 import Wallet from "./Wallet"
 import CoinTable from "./CoinTable"
 import Network from "./Network"
-import { EventTarget, Buffer, Convert, deepClone, shuffledLoop } from "./utils"
+import { EventTarget, Buffer, Convert, deepClone } from "./utils"
 
 type NodeEvents = {
   "transactioncompleted": CoinTable.SignedTransaction,
@@ -192,11 +192,9 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
       }
     }
 
-    const myVotes = disputedAdresses.size * Math.sqrt(oldBalances[this.wallet.public.address]?.amount ?? 0)
-    const senderVotes = disputedAdresses.size * Math.sqrt(oldBalances[from]?.amount ?? 0)
     const votes = {
-      old: myVotes,
-      new: senderVotes,
+      old: 0,
+      new: 0,
       other: 0,
       total: 0
     }
@@ -205,11 +203,8 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
     let totalVoters = 0
     let pendingVotes: Promise<void>[] = []
 
-    for (const connectedAddress of shuffledLoop(this.network.connectedAddresses)) {
-      if (connectedAddress === from || connectedAddress === this.wallet.public.address) { continue }
-
-      const votingPower = this.votingPower(connectedAddress)
-      if (!votingPower) { continue }
+    for (const connectedAddress of this.voters()) {
+      if (connectedAddress === from) { continue }
 
       pendingVotes.push((async () => {
         const requests: Promise<void>[] = new Array(disputedAdresses.size)
@@ -223,13 +218,13 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
 
             const amount = response ? response.amount : undefined
             if (amount === oldTable.balances[disputedAddress]?.amount) {
-              votes.old += votingPower
+              votes.old += 1
             } else if (amount === newTable.balances[disputedAddress]?.amount) {
-              votes.new += votingPower
+              votes.new += 1
             } else {
-              votes.other += votingPower
+              votes.other += 1
             }
-            votes.total += votingPower
+            votes.total += 1
 
             totalVoters += 1
           })()
@@ -287,43 +282,38 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
 
   async confirmBalance(address: string): Promise<boolean> {
     const requiredVotes = 100
-    let totalVoters = 0
     let totalVotes = 0
     let affirmativeVotes = 0
 
     const thisBalance = this.table.balances[address]
 
     let pendingVotes: Promise<void>[] = []
-    for (const connectedAddress of shuffledLoop(this.network.connectedAddresses)) {
+    for (const connectedAddress of this.voters()) {
       if (connectedAddress === address) { continue }
-
-      const votingPower = this.votingPower(address)
-      if (!votingPower) { continue }
 
       pendingVotes.push((async () => {
         const balance = await this.network.requestBalance(address, connectedAddress)
         if (balance === null) { return }
 
-        totalVoters += 1
-        totalVotes += votingPower
+        totalVotes += 1
         if (balance === false) {
           if (!thisBalance) {
-            affirmativeVotes += votingPower
+            affirmativeVotes += 1
           }
         } else if (
           balance.amount === thisBalance?.amount &&
           balance.timestamp === thisBalance?.timestamp &&
           balance.signature === thisBalance?.signature
         ) {
-          affirmativeVotes += votingPower
+          affirmativeVotes += 1
         }
       })())
 
-      if (pendingVotes.length + totalVoters >= requiredVotes) {
+      if (pendingVotes.length + totalVotes >= requiredVotes) {
         await Promise.all(pendingVotes)
         pendingVotes = []
       }
-      if (totalVoters >= requiredVotes) { break }
+      if (totalVotes >= requiredVotes) { break }
     }
     await Promise.all(pendingVotes)
 
@@ -388,13 +378,40 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
     return actionPromise
   }
 
-  votingPower(address: string): number {
-    const balance = this.table.balances[address]
+  *voters(): Generator<string, void, unknown> {
+    let stakePool = 0
+    const voters: { address: string, stake: number }[] = []
+    this.network.connectedAddresses.forEach(address => {
+      const stake = this.table.balances[address]?.amount
+      if (stake) {
+        voters.push({
+          address, stake
+        })
+        stakePool += stake
+      }
+    })
 
-    if (!balance?.amount) {
-      return 0
-    } else {
-      return Math.sqrt(balance.amount)
+    console.log(voters)
+
+    const count = voters.length
+    for (let i = 0; i < count; i++) {
+      let voterIndex = 0
+      let voter: { address: string, stake: number } | null = null
+
+      const selection = Math.random() * stakePool
+      for (let i = 0, accumulator = 0; i < voters.length; i++) {
+        voterIndex = i
+        voter = voters[i]
+        accumulator += voter.stake
+
+        if (accumulator > selection) { break }
+      }
+
+      if (!voter) { return }
+
+      yield voter.address
+      stakePool -= voter.stake
+      voters.splice(voterIndex, 1)
     }
   }
 }
