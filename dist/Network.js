@@ -921,10 +921,6 @@ class Network extends utils_1.EventTarget {
             for (let i = 0; i < 2; i++) {
                 seed ^= amountArr[i];
             }
-            const timestampArr = new Uint32Array(utils_1.Convert.int64ToBuffer(senderBalance.timestamp).buffer);
-            for (let i = 0; i < 2; i++) {
-                seed ^= timestampArr[i];
-            }
             const senderArr = new Uint32Array(utils_1.Convert.Base58.decodeBuffer(transaction.sender, 36).buffer);
             for (let i = 0; i < 9; i++) {
                 seed ^= senderArr[i];
