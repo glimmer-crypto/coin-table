@@ -6,6 +6,7 @@ declare class CoinTable {
     static readonly SUBDIVISION: number;
     static readonly initialTable: CoinTable;
     readonly balances: DeepReadonly<CoinTable.Balances>;
+    readonly coinSum: number;
     readonly isValid: boolean;
     readonly invalidReason?: string;
     readonly digest: Uint8Array;
@@ -18,11 +19,16 @@ declare class CoinTable {
     applyTransaction(transaction: CoinTable.SignedTransaction): void;
     exportBuffer(): Uint8Array;
     static importBuffer(buffer: Uint8Array): CoinTable;
-    static initialize(networkId: string, totalCoins: number, subdivision: number, initialBalances: CoinTable.Balances): void;
+    static initialize(networkId: string, totalCoins: number, subdivision: number, initialBalances: CoinTable.Balances | Omit<CoinTable.Balances, "burned">): void;
 }
 declare namespace CoinTable {
     interface Balances {
         [walletAddress: string]: SignedBalance;
+        burned: {
+            amount: number;
+            timestamp: 0;
+            signature: "";
+        };
     }
     interface Balance {
         amount: number;

@@ -124,9 +124,17 @@ class Node extends utils_1.EventTarget {
         const oldBalances = oldTable.balances;
         const mergedBalances = utils_1.deepClone(oldBalances);
         const allAdresses = new Set(oldTable.addresses);
-        const disputedAdresses = new Set();
+        const disputedAddresses = new Set();
         if (!newTable.isValid) {
             return false;
+        }
+        const oldBurned = oldBalances.burned.amount;
+        const newBurned = newTable.balances.burned.amount;
+        if (oldBurned > newBurned) {
+            mergedBalances.burned.amount = oldBurned;
+        }
+        else {
+            mergedBalances.burned.amount = newBurned;
         }
         const missingAdresses = new Set(allAdresses);
         newTable.addresses.list.forEach(walletAddress => {
@@ -138,19 +146,19 @@ class Node extends utils_1.EventTarget {
             else if (currentBalance.timestamp < balance.timestamp) {
                 mergedBalances[walletAddress] = balance;
                 if (currentBalance.amount !== balance.amount) {
-                    disputedAdresses.add(walletAddress);
+                    disputedAddresses.add(walletAddress);
                 }
             }
             if (!allAdresses.has(walletAddress)) {
                 allAdresses.add(walletAddress);
-                disputedAdresses.add(walletAddress);
+                disputedAddresses.add(walletAddress);
             }
             missingAdresses.delete(walletAddress);
         });
         missingAdresses.forEach(missingAddress => {
-            disputedAdresses.add(missingAddress);
+            disputedAddresses.add(missingAddress);
         });
-        const returnTable = new CoinTable_1.default(mergedBalances);
+        let returnTable = new CoinTable_1.default(mergedBalances);
         if (returnTable.isValid) {
             if (utils_1.Buffer.equal(returnTable.digest, oldTable.digest)) {
                 return null;
@@ -159,12 +167,13 @@ class Node extends utils_1.EventTarget {
                 return returnTable;
             }
         }
-        const votes = {
+        const totalVotes = {
             old: 0,
             new: 0,
             other: 0,
             total: 0
         };
+        const balanceVotes = {};
         const requiredVoters = 100;
         let totalVoters = 0;
         let pendingVotes = [];
@@ -173,26 +182,40 @@ class Node extends utils_1.EventTarget {
                 continue;
             }
             pendingVotes.push((async () => {
-                const requests = new Array(disputedAdresses.size);
+                const requests = new Array(disputedAddresses.size);
                 let addrIndex = 0;
-                disputedAdresses.forEach(disputedAddress => {
+                disputedAddresses.forEach(disputedAddress => {
+                    const votes = {
+                        old: 0,
+                        new: 0,
+                        other: 0,
+                        total: 0
+                    };
+                    balanceVotes[disputedAddress] = votes;
                     requests[addrIndex] = (async () => {
                         var _a, _b;
                         const response = await this.network.requestBalance(disputedAddress, connectedAddress, true);
                         if (response === null) {
                             return;
                         }
+                        if (response && !Wallet_1.default.verifyBalance(response, disputedAddress)) {
+                            return;
+                        }
                         const amount = response ? response.amount : undefined;
                         if (amount === ((_a = oldTable.balances[disputedAddress]) === null || _a === void 0 ? void 0 : _a.amount)) {
                             votes.old += 1;
+                            totalVotes.old += 1;
                         }
                         else if (amount === ((_b = newTable.balances[disputedAddress]) === null || _b === void 0 ? void 0 : _b.amount)) {
                             votes.new += 1;
+                            totalVotes.new += 1;
                         }
                         else {
                             votes.other += 1;
+                            totalVotes.other += 1;
                         }
                         votes.total += 1;
+                        totalVotes.total += 1;
                         totalVoters += 1;
                     })();
                     addrIndex += 1;
@@ -208,10 +231,48 @@ class Node extends utils_1.EventTarget {
             }
         }
         await Promise.all(pendingVotes);
-        console.log("Votes", votes);
+        console.log("Votes", totalVotes, balanceVotes);
+        disputedAddresses.forEach(address => {
+            const votes = balanceVotes[address];
+            const majority = 0.75 * votes.total;
+            if (votes.new > majority) {
+                mergedBalances[address] = newTable.balances[address];
+            }
+            else if (votes.old > majority) {
+                mergedBalances[address] = oldBalances[address];
+            }
+            else {
+                const oldAmount = oldBalances[address].amount;
+                const newAmount = newTable.balances[address].amount;
+                if (oldAmount > newAmount) {
+                    mergedBalances[address] = newTable.balances[address];
+                    mergedBalances.burned.amount += oldAmount - newAmount;
+                }
+                else {
+                    mergedBalances[address] = oldBalances[address];
+                    mergedBalances.burned.amount += newAmount - oldAmount;
+                }
+            }
+        });
+        returnTable = new CoinTable_1.default(mergedBalances);
+        console.log(returnTable);
+        if (returnTable.isValid) {
+            return returnTable;
+        }
+        else if (returnTable.coinSum < CoinTable_1.default.TOTAL_COINS) {
+            mergedBalances.burned.amount += CoinTable_1.default.TOTAL_COINS - returnTable.coinSum;
+            returnTable = new CoinTable_1.default(mergedBalances);
+            if (returnTable.isValid) {
+                return returnTable;
+            }
+        }
+        return false;
         // 3/4 majority
-        if (votes.new > 0.75 * votes.total) {
+        if (totalVotes.new > 0.75 * totalVotes.total) {
             return newTable;
+        }
+        else if (totalVotes.new > 0.5 * totalVotes.total) {
+            return false;
         }
         else {
             return false;

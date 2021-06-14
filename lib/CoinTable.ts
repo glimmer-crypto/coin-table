@@ -18,6 +18,7 @@ class CoinTable {
   static readonly initialTable: CoinTable
 
   readonly balances: DeepReadonly<CoinTable.Balances>
+  readonly coinSum: number
   readonly isValid: boolean
   readonly invalidReason?: string
   readonly digest: Uint8Array
@@ -27,18 +28,27 @@ class CoinTable {
   constructor(balances: CoinTable.Balances) {
     if (!initializing && !initialized) { throw new Error("Not initialized, use CoinTable.initialize()") }
 
-    const normalizedBalances: CoinTable.Balances = {}
-    const addresses = Object.keys(balances).map(addr => {
+    let coinSum = 0
+
+    const normalizedBalances: CoinTable.Balances = {
+      burned: balances.burned
+    }
+    const addresses: string[] = []
+    Object.keys(balances).forEach(addr => {
+      coinSum  += balances[addr].amount
+
+      if (addr === "burned") { return }
+
       const norm = Convert.Base58.normalize(addr)
       normalizedBalances[norm] = deepClone(balances[addr])
 
-      return norm
-    });
+      addresses.push(norm)
+    })
 
     this.addresses = new SortedList(addresses, true)
-    // (this.addresses as string[]).sort()
 
     this.balances = normalizedBalances
+    this.coinSum = coinSum
 
     const results = this.verifyTable()
     this.isValid = results.valid
@@ -161,15 +171,21 @@ class CoinTable {
       buffer.set(bal, balanceSize * i)
     })
 
-    return buffer
+    return Buffer.concat(buffer, Convert.int64ToBuffer(this.balances.burned.amount))
   }
 
   static importBuffer(buffer: Uint8Array): CoinTable {
+    const balances: CoinTable.Balances = {
+      burned: {
+        amount: 0,
+        timestamp: 0,
+        signature: ""
+      }
+    }
+
     let startIndex = 0
 
-    const balances: CoinTable.Balances = {}
-
-    while (startIndex < buffer.length) {
+    while (startIndex < buffer.length - 8) {
       const addressArr = buffer.subarray(startIndex, startIndex += Key.Public.LENGTH)
       const amount = Convert.bufferToInt(buffer.subarray(startIndex, startIndex += 8))
       const timestamp = Convert.bufferToInt(buffer.subarray(startIndex, startIndex += 8))
@@ -185,10 +201,14 @@ class CoinTable {
       }
     }
 
+    if (startIndex === buffer.length - 8) {
+      balances.burned.amount = Convert.bufferToInt(buffer.subarray(startIndex, startIndex + 8))
+    }
+
     return new CoinTable(balances)
   }
 
-  static initialize(networkId: string, totalCoins: number, subdivision: number, initialBalances: CoinTable.Balances): void {
+  static initialize(networkId: string, totalCoins: number, subdivision: number, initialBalances: CoinTable.Balances | Omit<CoinTable.Balances, "burned">): void {
     try {
       const splitId = networkId.split(":")
       if (splitId.length !== 2 || !splitId[0] || !Convert.Base58.isEncodedString(splitId[0]) || !splitId[1] || !Convert.Base58.isEncodedString(splitId[1])) {
@@ -206,6 +226,9 @@ class CoinTable {
       }
 
       const balances = deepClone(initialBalances)
+      if (!balances.burned) {
+        balances.burned = { amount: 0, timestamp: 0, signature: "" }
+      }
       balances[identifier] = { amount: 0, timestamp: 0, signature: identifierSignature }
 
       normalizedIdentifier = Convert.Base58.normalize(identifier)
@@ -219,7 +242,7 @@ class CoinTable {
       statics.networkId = networkId
       statics.TOTAL_COINS = totalCoins
       statics.SUBDIVISION = subdivision
-      statics.initialTable = new CoinTable(balances)
+      statics.initialTable = new CoinTable(balances as CoinTable.Balances)
 
       if (!CoinTable.initialTable.isValid) {
         throw new TypeError("Initial table is invalid (" + CoinTable.initialTable.invalidReason + ")")
@@ -243,6 +266,11 @@ function zeroBalance(): CoinTable.Balance {
 namespace CoinTable {
   export interface Balances {
     [walletAddress: string]: SignedBalance
+    burned: {
+      amount: number,
+      timestamp: 0,
+      signature: ""
+    }
   }
   
   export interface Balance {

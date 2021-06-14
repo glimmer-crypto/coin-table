@@ -10,15 +10,23 @@ class CoinTable {
         if (!initializing && !initialized) {
             throw new Error("Not initialized, use CoinTable.initialize()");
         }
-        const normalizedBalances = {};
-        const addresses = Object.keys(balances).map(addr => {
+        let coinSum = 0;
+        const normalizedBalances = {
+            burned: balances.burned
+        };
+        const addresses = [];
+        Object.keys(balances).forEach(addr => {
+            coinSum += balances[addr].amount;
+            if (addr === "burned") {
+                return;
+            }
             const norm = utils_1.Convert.Base58.normalize(addr);
             normalizedBalances[norm] = utils_1.deepClone(balances[addr]);
-            return norm;
+            addresses.push(norm);
         });
         this.addresses = new utils_1.SortedList(addresses, true);
-        // (this.addresses as string[]).sort()
         this.balances = normalizedBalances;
+        this.coinSum = coinSum;
         const results = this.verifyTable();
         this.isValid = results.valid;
         this.invalidReason = results.reason;
@@ -125,12 +133,18 @@ class CoinTable {
         balances.forEach((bal, i) => {
             buffer.set(bal, balanceSize * i);
         });
-        return buffer;
+        return utils_1.Buffer.concat(buffer, utils_1.Convert.int64ToBuffer(this.balances.burned.amount));
     }
     static importBuffer(buffer) {
+        const balances = {
+            burned: {
+                amount: 0,
+                timestamp: 0,
+                signature: ""
+            }
+        };
         let startIndex = 0;
-        const balances = {};
-        while (startIndex < buffer.length) {
+        while (startIndex < buffer.length - 8) {
             const addressArr = buffer.subarray(startIndex, startIndex += Key_1.default.Public.LENGTH);
             const amount = utils_1.Convert.bufferToInt(buffer.subarray(startIndex, startIndex += 8));
             const timestamp = utils_1.Convert.bufferToInt(buffer.subarray(startIndex, startIndex += 8));
@@ -142,6 +156,9 @@ class CoinTable {
                 timestamp: Number(timestamp),
                 signature
             };
+        }
+        if (startIndex === buffer.length - 8) {
+            balances.burned.amount = utils_1.Convert.bufferToInt(buffer.subarray(startIndex, startIndex + 8));
         }
         return new CoinTable(balances);
     }
@@ -160,6 +177,9 @@ class CoinTable {
                 throw new TypeError("Subdivision must be a positive integer");
             }
             const balances = utils_1.deepClone(initialBalances);
+            if (!balances.burned) {
+                balances.burned = { amount: 0, timestamp: 0, signature: "" };
+            }
             balances[identifier] = { amount: 0, timestamp: 0, signature: identifierSignature };
             normalizedIdentifier = utils_1.Convert.Base58.normalize(identifier);
             normalizedIdentifierSignature = utils_1.Convert.Base58.normalize(identifierSignature);

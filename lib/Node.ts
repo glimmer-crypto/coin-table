@@ -152,10 +152,18 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
     const mergedBalances: CoinTable.Balances = deepClone(oldBalances)
 
     const allAdresses = new Set<string>(oldTable.addresses)
-    const disputedAdresses = new Set<string>()
+    const disputedAddresses = new Set<string>()
 
     if (!newTable.isValid) {
       return false
+    }
+
+    const oldBurned = oldBalances.burned.amount
+    const newBurned = newTable.balances.burned.amount
+    if (oldBurned > newBurned) {
+      mergedBalances.burned.amount = oldBurned
+    } else {
+      mergedBalances.burned.amount = newBurned
     }
 
     const missingAdresses = new Set(allAdresses)
@@ -168,22 +176,22 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
         } else if (currentBalance.timestamp < balance.timestamp) {
           mergedBalances[walletAddress] = balance
           if (currentBalance.amount !== balance.amount) {
-            disputedAdresses.add(walletAddress)
+            disputedAddresses.add(walletAddress)
           }
         }
 
         if (!allAdresses.has(walletAddress)) {
           allAdresses.add(walletAddress)
-          disputedAdresses.add(walletAddress)
+          disputedAddresses.add(walletAddress)
         }
         missingAdresses.delete(walletAddress)
     })
 
     missingAdresses.forEach(missingAddress => {
-      disputedAdresses.add(missingAddress)
+      disputedAddresses.add(missingAddress)
     })
 
-    const returnTable = new CoinTable(mergedBalances)
+    let returnTable = new CoinTable(mergedBalances)
     if (returnTable.isValid) {
       if (Buffer.equal(returnTable.digest, oldTable.digest)) {
         return null
@@ -192,12 +200,13 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
       }
     }
 
-    const votes = {
+    const totalVotes = {
       old: 0,
       new: 0,
       other: 0,
       total: 0
     }
+    const balanceVotes: Record<string, { old: number, new: number, other: number, total: number }> = {}
 
     const requiredVoters = 100
     let totalVoters = 0
@@ -207,24 +216,37 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
       if (connectedAddress === from) { continue }
 
       pendingVotes.push((async () => {
-        const requests: Promise<void>[] = new Array(disputedAdresses.size)
+        const requests: Promise<void>[] = new Array(disputedAddresses.size)
   
         let addrIndex = 0
-        disputedAdresses.forEach(disputedAddress => {
+        disputedAddresses.forEach(disputedAddress => {
+          const votes = {
+            old: 0,
+            new: 0,
+            other: 0,
+            total: 0
+          }
+          balanceVotes[disputedAddress] = votes
+
           requests[addrIndex] = (async () => {
             const response = await this.network.requestBalance(disputedAddress, connectedAddress, true)
 
             if (response === null) { return }
+            if (response && !Wallet.verifyBalance(response, disputedAddress)) { return }
 
             const amount = response ? response.amount : undefined
             if (amount === oldTable.balances[disputedAddress]?.amount) {
               votes.old += 1
+              totalVotes.old += 1
             } else if (amount === newTable.balances[disputedAddress]?.amount) {
               votes.new += 1
+              totalVotes.new += 1
             } else {
               votes.other += 1
+              totalVotes.other += 1
             }
             votes.total += 1
+            totalVotes.total += 1
 
             totalVoters += 1
           })()
@@ -243,11 +265,50 @@ export default class Node extends EventTarget<NodeEvents> implements NetworkDele
     }
     await Promise.all(pendingVotes)
 
-    console.log("Votes", votes)
+    console.log("Votes", totalVotes, balanceVotes)
+
+    disputedAddresses.forEach(address => {
+      const votes = balanceVotes[address]
+
+      const majority = 0.75 * votes.total
+      if (votes.new > majority) {
+        mergedBalances[address] = newTable.balances[address]
+      } else if (votes.old > majority) {
+        mergedBalances[address] = oldBalances[address]
+      } else {
+        const oldAmount = oldBalances[address].amount
+        const newAmount = newTable.balances[address].amount
+
+        if (oldAmount > newAmount) {
+          mergedBalances[address] = newTable.balances[address]
+          mergedBalances.burned.amount += oldAmount - newAmount
+        } else {
+          mergedBalances[address] = oldBalances[address]
+          mergedBalances.burned.amount += newAmount - oldAmount
+        }
+      }
+    })
+
+    returnTable = new CoinTable(mergedBalances)
+    console.log(returnTable)
+    if (returnTable.isValid) {
+      return returnTable
+    } else if (returnTable.coinSum < CoinTable.TOTAL_COINS) {
+      mergedBalances.burned.amount += CoinTable.TOTAL_COINS - returnTable.coinSum
+      returnTable = new CoinTable(mergedBalances)
+      
+      if (returnTable.isValid) {
+        return returnTable
+      }
+    }
+
+    return false
 
     // 3/4 majority
-    if (votes.new > 0.75 * votes.total) {
+    if (totalVotes.new > 0.75 * totalVotes.total) {
       return newTable
+    } else if (totalVotes.new > 0.5 * totalVotes.total) {
+      return false
     } else {
       return false
     }
